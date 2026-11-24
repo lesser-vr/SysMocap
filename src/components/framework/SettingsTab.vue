@@ -214,7 +214,7 @@
                 <div class="settings-item">
                     <span><span class="material-icons-outlined">
                             camera </span>{{language.tabMocap.chooseCamera}}</span>
-                    <select v-model="camera" class="mdui-select" style="float: right; margin-right: 10px"
+                    <select v-model="camera" class="camera-select" style="float: right; margin-right: 10px"
                         id="demo-js-3">
                         <option v-for="c in cameras" v-bind:value="c.id">
                             {{c.label}}

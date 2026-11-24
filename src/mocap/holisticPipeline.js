@@ -1,3 +1,4 @@
+import { openSelectedCamera } from "./selectedCamera.mjs";
 /**
  *  MediaPipe Holistic detection pipeline (shared).
  *
@@ -155,14 +156,7 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
         : "scale(1, 1)";
 
     if (useCamera) {
-        navigator.mediaDevices
-            .getUserMedia({
-                video: {
-                    deviceId: localStorage.getItem("cameraId"),
-                    width: 1280,
-                    height: 720,
-                },
-            })
+        openSelectedCamera()
             .then(function (stream) {
                 videoElement.srcObject = stream;
                 videoElement.play();

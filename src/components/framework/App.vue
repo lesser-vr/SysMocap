@@ -22,6 +22,7 @@
 </template>
 
 <script>
+import { selectedCameraQuery } from "../../mocap/selectedCamera.mjs";
 import { onMounted, watch, nextTick, toRefs } from "vue";
 import TitleBar from "./TitleBar.vue";
 import ModelLibraryTab from "./ModelLibraryTab.vue";
@@ -349,9 +350,7 @@ export default {
                 app.camera = lastChoosed;
             }
         }
-        nextTick(() => {
-            new mdui.Select("#demo-js-3");
-        });
+
     });
 
     window.sysmocapApp = app;
@@ -645,12 +644,12 @@ window.startMocap = async function (e) {
                 width: parseInt(winWidth / 2) - 20,
                 height: parseInt(((winWidth - 40) * 10) / 32),
             });
-            bw.webContents.loadFile("dist/src/pages/mocap/mocap.html");
+            bw.webContents.loadFile("dist/src/pages/mocap/mocap.html", { query: selectedCameraQuery() });
             if (window.sysmocapApp.settings.dev.openDevToolsWhenMocap)
                 bw.webContents.openDevTools({ mode: "detach" });
             document.getElementById("foo").src = "../render/render.html";
         } else {
-            document.getElementById("foo").src = "../mocaprender/render.html";
+            document.getElementById("foo").src = "../mocaprender/render.html?" + new URLSearchParams(selectedCameraQuery());
         }
 
         e.innerHTML =
