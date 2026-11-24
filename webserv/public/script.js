@@ -26,10 +26,12 @@ import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import Stats from "three/addons/libs/stats.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import { createFluffoView } from "/fluffo/fluffoMcu.mjs";
 
 
 /* THREEJS WORLD SETUP */
 let currentVrm;
+let fluffoView;
 
 var mocapData = null;
 
@@ -43,15 +45,16 @@ const useXRres = await fetch("/useWebXR");
 const useXR = await useXRres.json();
 if (useXR) {
     renderer.xr.enabled = true;
-    const ar = ARButton.createButton(renderer)
-    const vr = VRButton.createButton(renderer)
-    ar.style.marginLeft = '-75px'
-    vr.style.marginLeft = '75px'
-    document.body.appendChild(ar);
-    document.body.appendChild(vr);
+    for (const [mode,button,margin] of [['immersive-ar',ARButton,'-75px'],['immersive-vr',VRButton,'75px']]) {
+        if (await navigator.xr?.isSessionSupported(mode).catch(()=>false)) {
+            const element=button.createButton(renderer);
+            element.style.marginLeft=margin;
+            document.body.appendChild(element);
+        }
+    }
 }
 
-document.body.appendChild(renderer.domElement);
+document.getElementById("avatar-stage").appendChild(renderer.domElement);
 
 // camera
 const orbitCamera = new THREE.PerspectiveCamera(
@@ -139,6 +142,11 @@ loader.load(
             }
             currentVrm = vrm;
             window.currentVrm = currentVrm;
+            fluffoView = createFluffoView(vrm, orbitCamera, orbitControls);
+            if(fluffoView) {
+                orbitCamera.fov=35;
+                orbitCamera.updateProjectionMatrix();
+            }
         } else {
             skeletonHelper = new THREE.SkeletonHelper(model);
             skeletonHelper.visible = false;
@@ -227,7 +235,7 @@ const rigRotation = (
             rotation.rotationOrder || "XYZ"
         );
         let quaternion = new THREE.Quaternion().setFromEuler(euler);
-        Part.quaternion.slerp(quaternion, lerpAmount); // interpolate
+        Part.quaternion.slerp(quaternion, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
     } else if (skeletonHelper) {
         var skname = modelObj.binding[name].name; // convert name with model json binding info
         if (skname == "None") {
@@ -283,7 +291,7 @@ const rigPosition = (
             position.y * dampener,
             position.z * dampener
         );
-        Part.position.lerp(vector, lerpAmount); // interpolate
+        Part.position.lerp(vector, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
     } else if (skeletonHelper) {
         name = modelObj.binding[name].name; // convert name with model json binding info
         // find bone in bones by name
@@ -409,7 +417,7 @@ const rigFace = (riggedFace) => {
         "XYZ"
     );
     oldLookTarget.copy(lookTarget);
-    currentVrm.lookAt.applier.applyYawPitch(lookTarget.y, lookTarget.x);
+    currentVrm.lookAt?.applier?.applyYawPitch(lookTarget.y, lookTarget.x);
 };
 
 /* VRM Character Animator */
@@ -418,6 +426,7 @@ const animateVRM = (vrm, results) => {
         return;
     }
     if(!results) return;
+    fluffoView?.receiveControls(results.fluffoRig?.liveControls);
     // Take the results from `Holistic` and animate character based on its Face, Pose, and Hand Keypoints.
     let riggedPose = results.riggedPose,
         riggedLeftHand = results.riggedLeftHand,
@@ -426,14 +435,16 @@ const animateVRM = (vrm, results) => {
 
     // Animate Face
     if (riggedFace ) {
-        rigRotation("Neck", riggedFace.head, 0.7);
-        if (fileType == "vrm") rigFace(JSON.parse(JSON.stringify(riggedFace)));
+        const head=fluffoView ? fluffoView.head(riggedFace.head,results.fluffoRig?.frame) : riggedFace.head;
+        rigRotation("Neck", head, fluffoView ? .49 : .7);
+        if(fluffoView) rigRotation("Head",head,.21);
+        else if (fileType == "vrm") rigFace(JSON.parse(JSON.stringify(riggedFace)));
     }
 
     // Animate Pose
     if (riggedPose) {
-        rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
-        rigPosition(
+        if(!fluffoView) rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
+        if(!fluffoView) rigPosition(
             "Hips",
             {
                 x: riggedPose.Hips.position.x, // Reverse direction
@@ -459,7 +470,13 @@ const animateVRM = (vrm, results) => {
     }
 
     // Animate Hands
-    if (riggedLeftHand  && fileType == "vrm") {
+    if(fluffoView){
+        const hands=riggedPose?.chestUpHands;
+        const now=performance.now();
+        fluffoView.applyHands(hands,now);
+        fluffoView.applyRig(results.fluffoRig,now,true,hands,riggedFace?.mouth?.shape,riggedFace?.eye);
+    }
+    if (riggedLeftHand && riggedPose && fileType == "vrm" && !fluffoView) {
         rigRotation("LeftHand", {
             // Combine pose rotation Z and hand rotation X Y
             z: riggedPose.LeftHand.z,
@@ -497,7 +514,7 @@ const animateVRM = (vrm, results) => {
         );
         rigRotation("LeftLittleDistal", riggedLeftHand.LeftLittleDistal);
     }
-    if (riggedRightHand && fileType == "vrm") {
+    if (riggedRightHand && riggedPose && fileType == "vrm" && !fluffoView) {
         // riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
         rigRotation("RightHand", {
             // Combine Z axis from pose hand and X/Y axis from hand wrist rotation
@@ -541,26 +558,16 @@ const animateVRM = (vrm, results) => {
 
 
 function animate() {
-    requestAnimationFrame(animate);
     animateVRM(currentVrm, mocapData);
     if (currentVrm) {
         // Update model to render physics
-        currentVrm.update(clock.getDelta());
+        const dt=clock.getDelta();
+        currentVrm.update(dt);
+        fluffoView?.updateIdle(dt);
     }
     renderer.render(scene, orbitCamera);
 }
-animate();
-
-
-if (useXR) renderer.setAnimationLoop( function () {
-    animateVRM(currentVrm, mocapData);
-	if (currentVrm) {
-        // Update model to render physics
-        currentVrm.update(clock.getDelta());
-    }
-    renderer.render(scene, orbitCamera);
-
-} );
+renderer.setAnimationLoop(animate);
 
 socket.on("message",  function (evt) {
     // console.log(evt.data);

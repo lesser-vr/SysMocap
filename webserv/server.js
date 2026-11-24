@@ -34,6 +34,9 @@ app.use((req, res, next) => {
 
 app.use("/node_modules", express.static(__dirname + "/../node_modules"));
 app.use(express.static(__dirname + "/public"));
+for (const name of ['fluffoMcu.mjs','fluffoRigDriver.mjs','fluffoIdle.mjs','fluffoSmoothness.mjs']) {
+    app.get('/fluffo/'+name, (_req,res)=>res.type('text/javascript').sendFile(path.join(__dirname,'../src/mocap',name)));
+}
 
 // var expressWs = require("express-ws")(app);
 var modelPath = null;
@@ -73,9 +76,11 @@ app.get("/modelInfo", (req, res) => {
 module.exports = {
     startServer: function (port, modelStr,useXR) {
         modelObj = JSON.parse(modelStr)
-        modelPath = path.resolve(__dirname, modelObj.path);
+        modelPath = /^file:/i.test(modelObj.path)
+            ? require('node:url').fileURLToPath(modelObj.path) : path.resolve(__dirname, modelObj.path);
+        modelObj.type = path.extname(modelPath).slice(1).toLowerCase() || modelObj.type;
         modelObj.path = "/model"
-        useWebXR = useXR;
+        useWebXR = useXR === true || useXR === 'true';
         server = httpxServer.listen(port, "0.0.0.0", function () {
             console.log("[ Mocap Forwarding Server ] Server Started.");
         });
