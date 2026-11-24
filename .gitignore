@@ -108,3 +108,5 @@ dist
 .DS_Store
 # Generated from pinned MediaPipe packages and model releases.
 /src/mocap/face-runtime/
+
+/test-output/

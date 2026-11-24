@@ -34,6 +34,8 @@ Available for Windows, macOS (including Apple Silicon & Intel) & Linux (source c
 
 (This is a multi-language software, including English and Chinese. )
 
+[Fluffo 방송판 실행 및 검증 안내](tests/fluffo/README.md)
+
 ### Highlights
 
 🌟 Beautiful GUI with Material Design 3 Color System, with Dark Mode supported.
