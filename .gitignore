@@ -106,3 +106,5 @@ dist
 # TernJS port file
 .tern-port
 .DS_Store
+# Generated from pinned MediaPipe packages and model releases.
+/src/mocap/face-runtime/

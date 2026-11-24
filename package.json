@@ -4,6 +4,7 @@
   "description": "Video-based motion capture system.",
   "main": "main.js",
   "scripts": {
+    "prebuild": "node scripts/prepare-tracking.mjs",
     "build": "vite build",
     "start": "npm run build && electron .",
     "package:mac64": "node buildpackage.js darwin x64",
@@ -43,6 +44,7 @@
     "@mediapipe/camera_utils": "^0.3.1675466862",
     "@mediapipe/drawing_utils": "^0.3.1675466124",
     "@mediapipe/holistic": "^0.5.1675471629",
+    "@mediapipe/tasks-vision": "1.2.3",
     "@vitejs/plugin-vue": "^6.0.7",
     "electron": "^42.4.0",
     "fs-extra": "^11.2.0",
