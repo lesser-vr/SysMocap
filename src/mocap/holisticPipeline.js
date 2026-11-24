@@ -1,3 +1,5 @@
+import { createRigCapture } from "fluffo-rig-capture";
+import { chestUpHands } from "fluffo-mcu";
 import { openSelectedCamera } from "./selectedCamera.mjs";
 /**
  *  MediaPipe Holistic detection pipeline (shared).
@@ -27,15 +29,22 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
     const videoElement = document.querySelector(".input_video");
     const guideCanvas = document.querySelector("canvas.guides");
     let started = false;
+    const readRig = createRigCapture(videoElement);
 
     // Landmarks -> Kalidokit rigged data (note: MediaPipe's 3D-landmark field is
     // the mangled `results.za`, and the hand landmarks arrive reversed).
     const solve = (results) => {
+        // Keep the guide overlay on raw input while solving the avatar from fused hands.
+        results = {...results};
+        const fluffoRig = readRig(results);
         const faceLandmarks = results.faceLandmarks;
         const pose3DLandmarks = results.za;
         const pose2DLandmarks = results.poseLandmarks;
         const leftHandLandmarks = results.rightHandLandmarks;
         const rightHandLandmarks = results.leftHandLandmarks;
+        // Face.solve converts the face landmarks to pixels in place.
+        const handTargets=pose2DLandmarks && pose3DLandmarks
+            ? chestUpHands(results,videoElement,fluffoRig?.handStamp) : null;
 
         let riggedPose, riggedLeftHand, riggedRightHand, riggedFace;
         if (faceLandmarks) {
@@ -50,13 +59,14 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
                 video: videoElement,
             });
         }
+        if (riggedPose) riggedPose.chestUpHands = handTargets;
         if (leftHandLandmarks) {
             riggedLeftHand = Kalidokit.Hand.solve(leftHandLandmarks, "Left");
         }
         if (rightHandLandmarks && fileType == "vrm") {
             riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
         }
-        return { riggedPose, riggedLeftHand, riggedRightHand, riggedFace };
+        return { riggedPose, riggedLeftHand, riggedRightHand, riggedFace, fluffoRig };
     };
 
     const drawResults = (results) => {

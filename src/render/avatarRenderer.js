@@ -1,3 +1,4 @@
+import { createFluffoView } from "fluffo-mcu";
 /**
  *  Shared avatar renderer (three.js scene + model load + rig + animate + record)
  *
@@ -39,6 +40,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
     const hipRotationOffset = 0.0;
 
     let currentVrm = null;
+    let fluffoView = null;
     let skeletonHelper;
     let boneMap = null; // name -> bone, built once after load (avoids per-frame .find)
     let initRotation = {};
@@ -153,6 +155,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 }
                 currentVrm = vrm;
                 window.currentVrm = currentVrm;
+                fluffoView = createFluffoView(vrm, orbitCamera, orbitControls, document.getElementById("controller"));
             } else {
                 skeletonHelper = new THREE.SkeletonHelper(model);
                 skeletonHelper.visible = false;
@@ -240,7 +243,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 rotation.rotationOrder || "XYZ"
             );
             let quaternion = new THREE.Quaternion().setFromEuler(euler);
-            Part.quaternion.slerp(quaternion, lerpAmount); // interpolate
+            Part.quaternion.slerp(quaternion, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
         } else if (skeletonHelper) {
             var skname = modelObj.binding[name].name; // convert name with model json binding info
             if (skname == "None") {
@@ -296,7 +299,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 position.y * dampener,
                 position.z * dampener
             );
-            Part.position.lerp(vector, lerpAmount); // interpolate
+            Part.position.lerp(vector, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
         } else if (skeletonHelper) {
             name = modelObj.binding[name].name; // convert name with model json binding info
             // find bone in bones by name
@@ -351,42 +354,44 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
 
         // Simple example without winking. Interpolate based on old blendshape, then stabilize blink with `Kalidokit` helper function.
         // for VRM, 1 is closed, 0 is open.
-        riggedFace.eye.l = lerp(
-            clamp(1 - riggedFace.eye.l, 0, 1),
-            Blendshape.getValue(PresetName.Blink),
-            0.4
-        );
-        riggedFace.eye.r = lerp(
-            clamp(1 - riggedFace.eye.r, 0, 1),
-            Blendshape.getValue(PresetName.Blink),
-            0.4
-        );
-        riggedFace.eye.l /= 0.8;
-        riggedFace.eye.r /= 0.8;
-        Blendshape.setValue(PresetName.BlinkL, riggedFace.eye.l);
-        Blendshape.setValue(PresetName.BlinkR, riggedFace.eye.r);
+        if (!fluffoView) {
+            riggedFace.eye.l = lerp(
+                clamp(1 - riggedFace.eye.l, 0, 1),
+                Blendshape.getValue(PresetName.Blink),
+                0.4
+            );
+            riggedFace.eye.r = lerp(
+                clamp(1 - riggedFace.eye.r, 0, 1),
+                Blendshape.getValue(PresetName.Blink),
+                0.4
+            );
+            riggedFace.eye.l /= 0.8;
+            riggedFace.eye.r /= 0.8;
+            Blendshape.setValue(PresetName.BlinkL, riggedFace.eye.l);
+            Blendshape.setValue(PresetName.BlinkR, riggedFace.eye.r);
 
-        // Interpolate and set mouth blendshapes
-        Blendshape.setValue(
-            PresetName.I,
-            lerp(riggedFace.mouth.shape.I / 0.8, Blendshape.getValue(PresetName.I), 0.3)
-        );
-        Blendshape.setValue(
-            PresetName.A,
-            lerp(riggedFace.mouth.shape.A / 0.8, Blendshape.getValue(PresetName.A), 0.3)
-        );
-        Blendshape.setValue(
-            PresetName.E,
-            lerp(riggedFace.mouth.shape.E / 0.8, Blendshape.getValue(PresetName.E), 0.3)
-        );
-        Blendshape.setValue(
-            PresetName.O,
-            lerp(riggedFace.mouth.shape.O / 0.8, Blendshape.getValue(PresetName.O), 0.3)
-        );
-        Blendshape.setValue(
-            PresetName.U,
-            lerp(riggedFace.mouth.shape.U / 0.8, Blendshape.getValue(PresetName.U), 0.3)
-        );
+            // Interpolate and set mouth blendshapes
+            Blendshape.setValue(
+                PresetName.I,
+                lerp(riggedFace.mouth.shape.I / 0.8, Blendshape.getValue(PresetName.I), 0.3)
+            );
+            Blendshape.setValue(
+                PresetName.A,
+                lerp(riggedFace.mouth.shape.A / 0.8, Blendshape.getValue(PresetName.A), 0.3)
+            );
+            Blendshape.setValue(
+                PresetName.E,
+                lerp(riggedFace.mouth.shape.E / 0.8, Blendshape.getValue(PresetName.E), 0.3)
+            );
+            Blendshape.setValue(
+                PresetName.O,
+                lerp(riggedFace.mouth.shape.O / 0.8, Blendshape.getValue(PresetName.O), 0.3)
+            );
+            Blendshape.setValue(
+                PresetName.U,
+                lerp(riggedFace.mouth.shape.U / 0.8, Blendshape.getValue(PresetName.U), 0.3)
+            );
+        }
 
         // PUPILS — interpolate pupil and keep a copy of the value
         let lookTarget = new THREE.Euler(
@@ -396,7 +401,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             "XYZ"
         );
         oldLookTarget.copy(lookTarget);
-        currentVrm.lookAt.applier.applyYawPitch(lookTarget.y, lookTarget.x);
+        currentVrm.lookAt?.applier?.applyYawPitch(lookTarget.y, lookTarget.x);
     };
 
     let positionOffset = { x: 0.0, y: 1.0, z: 0.0 };
@@ -414,13 +419,15 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
 
         // Animate Face
         if (riggedFace) {
-            rigRotation("Neck", riggedFace.head, 0.7);
+            const head = fluffoView ? fluffoView.head(riggedFace.head, results.fluffoRig?.frame) : riggedFace.head;
+            rigRotation("Neck", head, fluffoView ? 0.49 : 0.7);
+            if (fluffoView) rigRotation("Head", head, 0.21);
             if (fileType == "vrm") rigFace(structuredClone(riggedFace));
         }
 
         // Animate Pose
         if (riggedPose) {
-            rigRotation(
+            if (!fluffoView?.active) rigRotation(
                 "Hips",
                 {
                     x: riggedPose.Hips.rotation.x,
@@ -429,7 +436,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 },
                 0.7
             );
-            rigPosition(
+            if (!fluffoView?.active) rigPosition(
                 "Hips",
                 {
                     x: riggedPose.Hips.position.x + positionOffset.x, // Reverse direction
@@ -454,8 +461,10 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("RightLowerLeg", riggedPose.RightLowerLeg);
         }
 
+        fluffoView?.applyHands(riggedPose?.chestUpHands);
+
         // Animate Hands
-        if (riggedLeftHand && fileType == "vrm") {
+        if (riggedLeftHand && fileType == "vrm" && !fluffoView) {
             rigRotation("LeftHand", {
                 z: riggedPose?.LeftHand?.z ?? 0,
                 y: riggedLeftHand.LeftWrist.y,
@@ -477,7 +486,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("LeftLittleIntermediate", riggedLeftHand.LeftLittleIntermediate);
             rigRotation("LeftLittleDistal", riggedLeftHand.LeftLittleDistal);
         }
-        if (riggedRightHand && fileType == "vrm") {
+        if (riggedRightHand && fileType == "vrm" && !fluffoView) {
             rigRotation("RightHand", {
                 z: riggedPose?.RightHand?.z ?? 0,
                 y: riggedRightHand.RightWrist.y,
@@ -499,6 +508,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("RightLittleIntermediate", riggedRightHand.RightLittleIntermediate);
             rigRotation("RightLittleDistal", riggedRightHand.RightLittleDistal);
         }
+        fluffoView?.applyRig(results.fluffoRig, performance.now(), fluffoView.active, riggedPose?.chestUpHands, riggedFace?.mouth?.shape, riggedFace?.eye);
     };
 
     // ---- recording (html2canvas + RecordRTC window globals) ----
@@ -547,7 +557,9 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
         stats.update();
 
         if (currentVrm) {
-            currentVrm.update(clock.getDelta()); // render physics
+            const delta = clock.getDelta();
+            currentVrm.update(delta);
+            fluffoView?.updateIdle(delta);
         }
         renderer.render(scene, orbitCamera);
 
@@ -613,6 +625,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
 
     // target presets (face / half / full) — adjusts the hip position offset
     function setTarget(target) {
+        fluffoView?.setTarget(target);
         var zRe = 1;
         if (currentVrm) {
             zRe = currentVrm.meta.metaVersion === "1" ? -1 : 1;

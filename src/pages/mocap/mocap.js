@@ -42,7 +42,7 @@ createHolisticPipeline({
             riggedPose: rigged.riggedPose,
             riggedLeftHand: rigged.riggedLeftHand,
             riggedRightHand: rigged.riggedRightHand,
-            riggedFace: rigged.riggedFace,
+            riggedFace: rigged.riggedFace, fluffoRig:rigged.fluffoRig,
         };
         // forward to the render iframe; sendBoradcastNew ALSO fans out to the web
         // server worker (sendRenderData is the render-iframe-only path). Both

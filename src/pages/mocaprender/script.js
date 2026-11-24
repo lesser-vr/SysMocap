@@ -66,7 +66,7 @@ const root = createApp({
                         riggedPose: rigged.riggedPose,
                         riggedLeftHand: rigged.riggedLeftHand,
                         riggedRightHand: rigged.riggedRightHand,
-                        riggedFace: rigged.riggedFace,
+                        riggedFace: rigged.riggedFace, fluffoRig:rigged.fluffoRig,
                     });
                 stage.pushData(rigged);
             },
