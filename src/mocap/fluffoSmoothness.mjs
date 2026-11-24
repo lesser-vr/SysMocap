@@ -56,3 +56,164 @@ export function desktopSmoothness(){
     window.addEventListener('storage',event=>{if(event.key===storageKey || event.key===null)local.set(load());});
     return local;
 }
+
+// Keep the user's preferred top-left corner even when a temporary resize or
+// expanding a section requires shifting the panel into view.
+function enablePanelDrag(panel,title){
+    const positionKey='fluffo.panel-position.v1';
+    let preferred,drag,suppressClick=false;
+    try{preferred=JSON.parse(localStorage.getItem(positionKey));}catch{}
+    function place(){
+        if(!Number.isFinite(preferred?.x) || !Number.isFinite(preferred?.y))return;
+        const {width,height}=panel.getBoundingClientRect();
+        const bound=(n,limit)=>Math.min(Math.max(4,n),Math.max(0,limit-4));
+        panel.style.left=bound(preferred.x,window.innerWidth-width)+'px';
+        panel.style.top=bound(preferred.y,window.innerHeight-height)+'px';
+        panel.style.bottom='auto';
+    }
+    title.addEventListener('pointerdown',event=>{
+        if(!event.isPrimary || event.button!==0)return;
+        const rect=panel.getBoundingClientRect();
+        suppressClick=false;
+        drag={id:event.pointerId,x:event.clientX,y:event.clientY,left:rect.left,top:rect.top};
+        title.setPointerCapture(event.pointerId);
+    });
+    title.addEventListener('pointermove',event=>{
+        if(!drag || event.pointerId!==drag.id)return;
+        const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
+        if(!suppressClick && Math.hypot(dx,dy)<5)return;
+        suppressClick=true;
+        panel.classList.add('dragging');
+        preferred={x:drag.left+dx,y:drag.top+dy};
+        place();
+    });
+    title.addEventListener('lostpointercapture',()=>{
+        if(suppressClick){
+            const {left,top}=panel.getBoundingClientRect();
+            preferred={x:left,y:top};
+            localStorage.setItem(positionKey,JSON.stringify(preferred));
+        }
+        drag=null;
+        panel.classList.remove('dragging');
+    });
+    title.addEventListener('click',event=>{
+        if(suppressClick && event.detail>0)event.preventDefault();
+        suppressClick=false;
+    });
+    new ResizeObserver(place).observe(panel);
+    window.addEventListener('resize',place);
+    place();
+}
+
+function enableSeparateWindow(panel,title,form,stylesheet){
+    const detach=document.createElement('button');
+    detach.type='button';detach.className='fluffo-detach';detach.textContent='별도 창';
+    detach.title='설정을 미리보기 밖으로 옮기기';
+    panel.append(detach);
+    let popup;
+    const boundsKey='fluffo.settings-window.v1';
+    detach.addEventListener('click',()=>{
+        if(popup && !popup.closed){popup.focus();return;}
+        let bounds;
+        try{bounds=JSON.parse(localStorage.getItem(boundsKey));}catch{}
+        const saved=bounds && ['left','top','width','height'].every(key=>Number.isFinite(bounds[key]));
+        const features=saved ? 'left='+bounds.left+',top='+bounds.top+',width='+bounds.width+',height='+bounds.height :
+            'left='+(screen.availLeft+Math.max(0,screen.availWidth-430))+',top='+(screen.availTop+40)+',width=410,height=530';
+        popup=window.open('','','popup,'+features);
+        if(!popup)return;
+        const doc=popup.document;
+        doc.title='Fluffo 방송 설정';doc.documentElement.lang='ko';
+        doc.head.append(stylesheet.cloneNode());
+        const content=doc.createElement('main');
+        content.id=panel.id;content.className='fluffo-detached';
+        doc.body.append(content);content.append(form);
+        panel.open=false;
+        popup.addEventListener('pagehide',()=>{
+            if(popup.innerWidth>0 && popup.innerHeight>0)localStorage.setItem(boundsKey,JSON.stringify({
+                left:popup.screenX,top:popup.screenY,width:popup.innerWidth,height:popup.innerHeight}));
+            panel.append(form);popup=null;
+        },{once:true});
+    });
+    title.addEventListener('click',event=>{
+        if(popup && !popup.closed){event.preventDefault();popup.focus();}
+    });
+    window.addEventListener('pagehide',()=>popup?.close(),{once:true});
+}
+
+export function mountSmoothnessPanel(host,settings){
+    const panel=document.createElement('details');
+    panel.id='fluffo-smoothness';
+    const style=document.createElement('link');
+    style.rel='stylesheet'; style.href=new URL('./fluffoSmoothness.css',import.meta.url).href;
+    document.head.append(style);
+    const title=document.createElement('summary'); title.textContent='Fluffo 방송 설정';
+    title.title='클릭하여 열거나 접기 · 드래그하여 이동';
+    const form=document.createElement('div');
+    const widgets=[];
+    function refresh(){
+        for(const [name,input,field] of widgets){
+            input.value=settings.values[name];
+            if(field)field.value=settings.values[name];
+            if(name==='backgroundColor')input.parentElement.hidden=settings.values.backgroundMode!=='custom';
+        }
+    }
+    function commit(values){
+        settings.set(values);
+        localStorage.setItem(storageKey,JSON.stringify(settings.values));
+        refresh();
+    }
+    for(const [group,entries] of Object.entries(groups)){
+        const section=document.createElement('details'),summary=document.createElement('summary');
+        section.open=group==='부드러움';
+        summary.textContent=group;section.append(summary);
+        if(group==='부드러움'){
+            const hint=document.createElement('small');hint.textContent='낮을수록 빠르게 · 높을수록 부드럽게';section.append(hint);
+        }
+        for(const [name,s] of Object.entries(entries)){
+            const row=document.createElement('label');
+            const input=document.createElement(s.choices?'select':'input');
+            let field=null;
+            input.name=name; input.setAttribute('aria-label',s.label);
+            row.append(s.label,input);
+            if(s.choices){
+                for(const [key,text] of Object.entries(s.choices))input.add(new Option(text,key));
+            }else if(s.color){
+                input.type='color';
+                if(name==='backgroundColor'){
+                    const hex=document.createElement('input');
+                    hex.type='text';hex.maxLength=7;hex.spellcheck=false;
+                    hex.setAttribute('aria-label','배경 색상 HEX');
+                    hex.addEventListener('change',()=>{
+                        const value='#'+hex.value.trim().replace(/^#/,'');
+                        if(/^#[0-9a-f]{6}$/i.test(value))commit({...settings.values,backgroundColor:value.toLowerCase()});
+                        else refresh();
+                    });
+                    row.className='fluffo-background-color';
+                    row.append(hex);field=hex;
+                }
+            }
+            else{
+                input.type='range';
+                const number=document.createElement('input'); number.type='number';number.setAttribute('aria-label',s.label+' 값');
+                for(const control of [input,number])Object.assign(control,{min:s.min,max:s.max,step:s.step});
+                row.append(number);
+                field=number;
+                number.addEventListener('change',()=>{
+                    if(Number.isFinite(number.valueAsNumber))commit({...settings.values,[name]:number.valueAsNumber});
+                    else refresh();
+                });
+            }
+            input.addEventListener('input',()=>commit({...settings.values,[name]:input.type==='range'?input.valueAsNumber:input.value}));
+            widgets.push([name,input,field]);section.append(row);
+        }
+        form.append(section);
+    }
+    const reset=document.createElement('button');reset.type='button';reset.textContent='전체 기본값 복원';
+    reset.addEventListener('click',()=>commit(defaults));
+    form.append(reset);panel.append(title,form);host.after(panel);
+    enablePanelDrag(panel,title);
+    enableSeparateWindow(panel,title,form,style);
+    settings.onChange(refresh);
+    panel.addEventListener('keydown',e=>e.stopPropagation());
+    refresh();
+}

@@ -1,6 +1,6 @@
 import { createRigDriver } from "./fluffoRigDriver.mjs";
 import { createIdlePlayer } from "./fluffoIdle.mjs";
-import {createSmoothness,desktopSmoothness} from "./fluffoSmoothness.mjs";
+import {createSmoothness,desktopSmoothness,mountSmoothnessPanel} from "./fluffoSmoothness.mjs";
 // In a chest-up shot Holistic can see a hand while its pose wrist is outside the image.
 // Use palm knuckles as the paw target, relative to the shoulder span of the speaker.
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -379,5 +379,6 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
     view.setTarget('face');
     appearance(Object.keys(values));
     tuning.onChange(appearance);
+    if(panelHost)mountSmoothnessPanel(panelHost,tuning);
     return view;
 }

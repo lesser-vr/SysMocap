@@ -1,0 +1,46 @@
+#fluffo-smoothness {
+    position: fixed;
+    bottom: 12px;
+    left: 12px;
+    z-index: 100001;
+    max-width: calc(100vw - 24px);
+    color: #20242b;
+    background: #fafafa;
+    border: 1px solid #a6aab1;
+    border-radius: 6px;
+    font: 14px/1.45 system-ui, sans-serif;
+}
+#fluffo-smoothness summary { padding: 6px 12px; cursor: pointer; font-weight: 600; }
+#fluffo-smoothness > summary {
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+#fluffo-smoothness[open] > summary { padding-right: 85px; }
+#fluffo-smoothness.dragging > summary { cursor: grabbing; }
+#fluffo-smoothness .fluffo-detach {
+    position: absolute; top: 3px; right: 8px; padding: 2px 8px;
+    font: inherit; font-size: 12px;
+}
+#fluffo-smoothness > div {
+    padding: 0 12px 10px;
+    width: min(355px, calc(100vw - 52px));
+    max-height: min(72vh,570px);
+    overflow: auto;
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+}
+#fluffo-smoothness small { color: #545962; }
+#fluffo-smoothness label { display: grid; grid-template-columns: 115px minmax(45px,1fr) 65px; align-items: center; gap: 8px; margin: 8px 0; }
+#fluffo-smoothness label[hidden] { display: none; }
+#fluffo-smoothness .fluffo-background-color { grid-template-columns: 115px minmax(45px,1fr) 80px; }
+#fluffo-smoothness .fluffo-background-color input { box-sizing: border-box; }
+#fluffo-smoothness input { width: 100%; margin: 0; }
+#fluffo-smoothness button { padding: 4px 8px; cursor: pointer; }
+#fluffo-smoothness details { border-top: 1px solid #ddd; }
+#fluffo-smoothness details summary { padding: 6px 0; }
+#fluffo-smoothness select { grid-column: span 2; }
+#fluffo-smoothness input[type=number] { box-sizing: border-box; text-align: right; }
+body:has(> .fluffo-detached) { margin: 0; background: #fafafa; }
+#fluffo-smoothness.fluffo-detached { position: static; max-width: none; border: 0; border-radius: 0; }
+#fluffo-smoothness.fluffo-detached > div { width: auto; max-height: none; padding-top: 6px; }
