@@ -65,7 +65,7 @@
                 </div>
             </div>
 
-            <div class="clickable tab-bar">
+            <div v-show="tab!=='render'" class="clickable tab-bar">
                 <!-- <div
                     class="mdui-color-theme"
                         style="

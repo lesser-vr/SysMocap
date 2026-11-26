@@ -29,11 +29,9 @@ const Color = require('color');
 const path = require("path");
 const storage = require("electron-localstorage");
 const fs = require("fs");
-const _path = path.join(
-    app.getPath("home"),
-    app.getName() + "/",
-    "profile.json"
-);
+const profileDirectory = app.commandLine.getSwitchValue("user-data-dir") ||
+    path.join(app.getPath("home"), app.getName());
+const _path = path.join(profileDirectory, "profile.json");
 const _path_dir = path.dirname(_path);
 if (!fs.existsSync(_path_dir)) {
     try {
@@ -84,8 +82,8 @@ let mainWindow;
 function createWindow() {
     // Create the browser window.
     mainWindow = new BrowserWindow({
-        width: 1180,
-        height: 750,
+        width: 480,
+        height: 650,
         titleBarStyle: "hidden",
         trafficLightPosition: { x: 18, y: 15 },
         fullscreenable: false,
@@ -101,6 +99,18 @@ function createWindow() {
             backgroundThrottling: false,
             nodeIntegrationInSubFrames: true,
         },
+    });
+
+    mainWindow.webContents.setWindowOpenHandler(({frameName, url}) => {
+        if (frameName !== "fluffo-avatar-output" || url !== "about:blank") return {action:"allow"};
+        return {action:"allow", overrideBrowserWindowOptions:{
+            title:"SysMocap 방송 출력", useContentSize:true, autoHideMenuBar:true
+        }};
+    });
+    mainWindow.webContents.on("did-create-window", (win, {frameName}) => {
+        // Apply to the live WebContents. A popup created from the render iframe
+        // can otherwise stop presenting to Windows capture when its opener minimizes.
+        if (frameName === "fluffo-avatar-output") win.webContents.setBackgroundThrottling(false);
     });
 
     // and load the index.html of the app.
@@ -130,6 +140,9 @@ function createWindow() {
                 backgroundThrottling: false,
                 nodeIntegrationInSubFrames: true,
             },
+        });
+        renderView.webContents.on("ipc-message",(_e,channel,message)=>{
+            if(channel==="broadcast-input-error") mainWindow.webContents.send(channel,message);
         });
         mainWindow.setBrowserView(renderView);
         renderView.setBounds({ x: 0, y: 0, width: 0, height: 0 });

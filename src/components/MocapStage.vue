@@ -185,7 +185,14 @@ export default {
             if (this.loading) this.loading = false;
             this.avatar.tickMocapStats();
             this._lastData = data;
+            window.parent.broadcastController?.frame(!!(data.riggedFace || data.fluffoRig?.scores));
         },
     },
 };
 </script>
+<style>
+.broadcast-stage #controller,.broadcast-stage #status,.broadcast-stage #fluffo-smoothness {display:none!important}
+.broadcast-stage #model,.broadcast-stage .input_video,.broadcast-stage canvas.guides {position:fixed!important;top:0!important;left:0!important;width:100%!important;box-sizing:border-box;border-radius:6px!important}
+.broadcast-stage[data-docked=true][data-preview=true] #model,.broadcast-stage[data-docked=true][data-preview=true] .input_video,.broadcast-stage[data-docked=true][data-preview=true] canvas.guides{width:50%!important}
+.broadcast-stage[data-docked=true][data-preview=true] .input_video,.broadcast-stage[data-docked=true][data-preview=true] canvas.guides{left:50%!important}
+.broadcast-stage[data-preview=false] .preview{visibility:hidden!important}</style>

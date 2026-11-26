@@ -391,7 +391,7 @@
                                 width: 40%;
                                 margin-bottom: -12px;
                             ">
-                        <input type="range" step="1" min="0" max="2" value="2"
+                        <input type="range" step="1" min="0" max="2"
                             v-model="settings.mediapipe.modelComplexity" />
                     </label>
                 </div>

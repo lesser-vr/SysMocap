@@ -269,7 +269,7 @@ export default {
         watch(
             () => state.camera,
             (newVal, oldVal) => {
-                if (oldVal != "") localStorage.setItem("last-choosed-camera", newVal);
+                if (newVal) localStorage.setItem("last-choosed-camera", newVal);
             }
         );
         watch(
@@ -335,23 +335,16 @@ export default {
             }
 
             // --- post-mount imperative code (relocated from framework.js) ---
-    navigator.mediaDevices.enumerateDevices().then((mediaDevices) => {
-        var lastChoosed = localStorage.getItem("last-choosed-camera");
-        for (var mediaDevice of mediaDevices)
-            if (mediaDevice.kind === "videoinput") {
-                app.cameras.push({
-                    id: mediaDevice.deviceId,
-                    label: mediaDevice.label,
-                });
-            }
-        if (app.cameras?.length > 0) app.camera = app.cameras[0].id;
-        if (lastChoosed) {
-            if (app.cameras?.find((e) => e.id == lastChoosed)) {
-                app.camera = lastChoosed;
-            }
-        }
-
-    });
+    async function refreshCameras() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            app.cameras = devices.filter(d => d.kind === "videoinput").map(d => ({id:d.deviceId,label:d.label}));
+            app.camera = app.camera || localStorage.getItem("last-choosed-camera") || app.cameras[0]?.id || "";
+        } catch { app.captureError = "카메라 목록을 읽을 수 없습니다. 다시 찾기를 눌러 주세요."; }
+    }
+    window.refreshCameras = refreshCameras;
+    refreshCameras();
+    navigator.mediaDevices.addEventListener("devicechange", refreshCameras);
 
     window.sysmocapApp = app;
 
@@ -370,7 +363,7 @@ export default {
                 },
             ],
         });
-        if (result) app.videoPath = result;
+        if (result?.length) {app.videoPath = result;localStorage.setItem("videoFile",result[0]);app.captureError="";}
     };
 
     // var inst = new mdui.Select("#demo-js");
@@ -577,7 +570,7 @@ export default {
     mdui.mutation();
 
             // --- iframe data bridge, startMocap, update check (formerly module scope) ---
-var isMocaping = false;
+
 
 const iframeWindow = document.getElementById("foo").contentWindow;
 
@@ -603,8 +596,8 @@ ipcRenderer.on("userModelsChanged", (ev, list) => {
     });
 });
 
-window.startMocap = async function (e) {
-    if (process.platform == "darwin" && app.videoSource == "camera")
+window.startMocap = async function () {
+    if (!app.running && process.platform == "darwin" && app.videoSource == "camera")
         if (
             remote.systemPreferences.getMediaAccessStatus("camera") !==
             "granted"
@@ -616,18 +609,22 @@ window.startMocap = async function (e) {
         }
     // drive the start/stop state off the boolean, not the localized button text
     // (which would misfire if the UI language changed mid-session).
-    if (!isMocaping) {
+    if (!app.running) {
         // file mode needs a chosen video first, else the pipeline sets
         // videoElement.src = "undefined" and the loading spinner hangs forever
         if (app.videoSource === "file" && !(app.videoPath && app.videoPath[0])) {
-            alert(app.language.tabMocap.noVideoSelected);
+            app.captureError="테스트할 영상을 선택해 주세요.";
             return;
         }
-        isMocaping = true;
+        if(app.videoSource==="camera" && !app.cameras.some(d=>d.id===app.camera && d.id)) {
+            app.captureError="선택한 카메라를 찾을 수 없습니다. 다시 찾거나 다른 장치를 선택해 주세요.";
+            return;
+        }
+        app.captureError=""; app.running=true; app.inputReady=false; app.modelReady=false; app.facePresent=false; app.outputOpen=false; app.customRig=false;
         localStorage.setItem("modelInfo", app.selectModel);
         localStorage.setItem("useCamera", app.videoSource);
         localStorage.setItem("cameraId", app.camera);
-        localStorage.setItem("videoFile", app.videoPath[0]);
+        if(app.videoPath[0])localStorage.setItem("videoFile", app.videoPath[0]);
 
         const win = remote.getCurrentWindow();
         const bw = win.getBrowserView();
@@ -635,15 +632,7 @@ window.startMocap = async function (e) {
         // persisted setting; if the user toggled the setting on without restarting, bw
         // is null -> fall back to the integrated page rather than crashing.
         if (window.sysmocapApp.settings.performance.useDescrertionProcess && bw) {
-            var winWidth = parseInt(win.getSize()[0]);
-            bw.setBounds({
-                x: parseInt(winWidth / 2),
-                y: parseInt(
-                    document.querySelector("#foo").getBoundingClientRect().y
-                ),
-                width: parseInt(winWidth / 2) - 20,
-                height: parseInt(((winWidth - 40) * 10) / 32),
-            });
+            window.layoutCaptureView();
             bw.webContents.loadFile("dist/src/pages/mocap/mocap.html", { query: selectedCameraQuery() });
             if (window.sysmocapApp.settings.dev.openDevToolsWhenMocap)
                 bw.webContents.openDevTools({ mode: "detach" });
@@ -651,13 +640,9 @@ window.startMocap = async function (e) {
         } else {
             document.getElementById("foo").src = "../mocaprender/render.html?" + new URLSearchParams(selectedCameraQuery());
         }
-
-        e.innerHTML =
-            '<i class="mdui-icon material-icons">stop</i>' +
-            app.language.tabMocap.stop;
     } else {
-        isMocaping = false;
-        if (window.sysmocapApp.settings.performance.useDescrertionProcess) {
+        app.running=false; app.inputReady=false; app.modelReady=false; app.facePresent=false; app.outputOpen=false; app.customRig=false;
+        {
             const win = remote.getCurrentWindow();
             const bw = win.getBrowserView();
             if (bw) {
@@ -665,37 +650,29 @@ window.startMocap = async function (e) {
                 bw.webContents.loadURL("about:blank");
             }
         }
-        document.getElementById("foo").src = "about:blank";
-
         if (window.sysmocapApp.settings.forward.enableForwarding)
             ipcRenderer.send("stopWebServer");
-
-        e.innerHTML =
-            '<i class="mdui-icon material-icons">play_arrow</i>' +
-            app.language.tabMocap.start;
+        const frame=document.getElementById("foo");
+        const documentAtStop=frame.contentDocument;
+        const capture=frame.contentWindow.stopBroadcastCapture?.();
+        if(capture)await Promise.race([capture,new Promise(resolve=>setTimeout(resolve,500))]);
+        if(!app.running && frame.contentDocument===documentAtStop)frame.src="about:blank";
     }
 };
 
-if (window.sysmocapApp.settings.performance.useDescrertionProcess)
-    window.addEventListener(
-        "resize",
-        function () {
-            if (!isMocaping) return;
-            const win = remote.getCurrentWindow();
-            const bw = win.getBrowserView();
-            if (!bw) return;
-            var winWidth = parseInt(win.getSize()[0]);
-            bw.setBounds({
-                x: parseInt(winWidth / 2),
-                y: parseInt(
-                    document.querySelector("#foo").getBoundingClientRect().y
-                ),
-                width: parseInt(winWidth / 2) - 20,
-                height: parseInt(((winWidth - 40) * 10) / 32),
-            });
-        },
-        false
-    );
+window.layoutCaptureView = () => {
+    const view=remote.getCurrentWindow().getBrowserView();
+    if(!view)return;
+    const frame=document.getElementById("foo"),rect=frame.getBoundingClientRect();
+    const visible=app.running && app.tab==="render" && app.settings.performance.useDescrertionProcess && window.broadcastController.preview() && rect.height>2;
+    const width=app.outputOpen ? rect.width : rect.width/2;
+    view.setBounds(visible ? {x:Math.round(rect.right-width),y:Math.round(rect.top),width:Math.floor(width),height:Math.floor(Math.min(rect.height,width*9/16))} : {x:0,y:0,width:0,height:0});
+};
+if(remote.getCurrentWindow().getBrowserView()){
+    new ResizeObserver(window.layoutCaptureView).observe(document.getElementById("foo"));
+    window.addEventListener("scroll",window.layoutCaptureView,true);
+    ipcRenderer.on("broadcast-input-error",(_event,message)=>window.broadcastController.fail(message));
+}
 
 // require modules
 const versionCheck = require("github-version-checker");

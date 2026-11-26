@@ -1,3 +1,15 @@
+@import url("../../fonts/pretendard/hangul.css");
+
+#avatar-output-toggle {
+    margin-left: 8px;
+    padding: 4px 10px;
+    border: 1px solid #a6aab1;
+    border-radius: 6px;
+    background: #fafafa;
+    color: #20242b;
+    font: 14px/1.4 "Pretendard Variable", system-ui, sans-serif;
+    cursor: pointer;
+}
 #fluffo-smoothness {
     position: fixed;
     bottom: 12px;
@@ -8,7 +20,7 @@
     background: #fafafa;
     border: 1px solid #a6aab1;
     border-radius: 6px;
-    font: 14px/1.45 system-ui, sans-serif;
+    font: 14px/1.45 "Pretendard Variable", system-ui, sans-serif;
 }
 #fluffo-smoothness summary { padding: 6px 12px; cursor: pointer; font-weight: 600; }
 #fluffo-smoothness > summary {
@@ -36,7 +48,9 @@
 #fluffo-smoothness .fluffo-background-color { grid-template-columns: 115px minmax(45px,1fr) 80px; }
 #fluffo-smoothness .fluffo-background-color input { box-sizing: border-box; }
 #fluffo-smoothness input { width: 100%; margin: 0; }
+#fluffo-smoothness input[type=checkbox] { width: 18px; height: 18px; justify-self: end; grid-column: span 2; }
 #fluffo-smoothness button { padding: 4px 8px; cursor: pointer; }
+#fluffo-smoothness :is(button,input,select) { font-family: inherit; }
 #fluffo-smoothness details { border-top: 1px solid #ddd; }
 #fluffo-smoothness details summary { padding: 6px 0; }
 #fluffo-smoothness select { grid-column: span 2; }
@@ -44,3 +58,16 @@
 body:has(> .fluffo-detached) { margin: 0; background: #fafafa; }
 #fluffo-smoothness.fluffo-detached { position: static; max-width: none; border: 0; border-radius: 0; }
 #fluffo-smoothness.fluffo-detached > div { width: auto; max-height: none; padding-top: 6px; }
+#fluffo-smoothness.inline-controls {position:static;border:0;background:transparent;max-width:100%;z-index:auto}
+#fluffo-smoothness.inline-controls > summary{display:none}
+#fluffo-smoothness.inline-controls > div{padding:0;width:auto;max-height:none;overflow:visible}
+#fluffo-smoothness.inline-controls label{grid-template-columns:minmax(105px,1fr) minmax(45px,1fr) 60px}
+#broadcast-settings .inline-controls .wardrobe:not([data-available="true"]):not(:has(> .wardrobe-items)),
+#broadcast-settings:not(.specialized) .inline-controls details:not([data-scene]):not([data-available="true"]):not(:has(> .wardrobe-items)){display:none}
+body:has(.broadcast:not([style*="display: none"])){background:#f5f5f7!important}
+
+#fluffo-smoothness .wardrobe > label,
+#fluffo-smoothness .wardrobe-items {font-size:13px;line-height:1.45}
+#fluffo-smoothness .wardrobe label:not([hidden]) {display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 0}
+#fluffo-smoothness .wardrobe label small {flex-basis:100%}
+#fluffo-smoothness .wardrobe label:has(small:not([hidden])) {flex-wrap:wrap}

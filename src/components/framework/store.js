@@ -34,14 +34,16 @@ window.remote = remote;
 window.ipcRenderer = ipcRenderer;
 
 export const state = reactive({
-    tab: "model",
+    tab: "render",
+    running:false, inputReady:false, modelReady:false, outputOpen:false, customRig:false, facePresent:false, captureError:"",
+    framing: ["face","half","full"].includes(localStorage.getItem("broadcast.framing")) ? localStorage.getItem("broadcast.framing") : "face",
     builtIn: builtInModels,
     selectModel: localStorage.getItem("selectModel")
         ? localStorage.getItem("selectModel")
         : JSON.stringify(builtInModels[0]),
     language: languages[globalSettings.ui.language],
-    videoSource: "camera",
-    videoPath: "",
+    videoSource: localStorage.getItem("useCamera")==="file" ? "file" : "camera",
+    videoPath: localStorage.getItem("videoFile") && localStorage.getItem("videoFile")!=="undefined" ? [localStorage.getItem("videoFile")] : [],
     showModelImporter: 0,
     modelImporterName: "",
     modelImporterType: "",
