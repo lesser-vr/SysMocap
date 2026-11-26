@@ -49,10 +49,10 @@ export function createLocalReader(video, {modelName, program, frameOptions, inte
         worker.postMessage({model,script,loader,binary},[model.buffer]);
         window.addEventListener('pagehide',stop,{once:true});
     } catch(error) { console.error('Fluffo '+modelName+' initialization:',error); stop(); }
-    return (context=null) => {
+    return (context=null, minInterval=interval) => {
         const now = performance.now();
         const stamp = video.currentTime;
-        if (!disposed && !busy && video.videoWidth && now-lastSent >= interval) {
+        if (!disposed && !busy && video.videoWidth && now-lastSent >= minInterval) {
             busy = true; lastSent = now;
             createImageBitmap(video,frameOptions(video)).then(frame => {
                 if (disposed) frame.close(); else worker.postMessage({frame,time:now,stamp,context},[frame]);
