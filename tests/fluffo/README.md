@@ -32,6 +32,7 @@ node tests/fluffo/run-file-test.cjs --obs-check --background-check
 - `--obs-check --wardrobe-check`는 의상 정보가 들어 있는 Fluffo VRM에서 여섯 항목의 표시 상태와 몸의 실제 보정값을 미리보기·브라우저 양쪽에서 검사합니다. **방송 설정 → 복장·액세서리**에서 셔츠를 벗으면 팔 두께가 복원되고 배지도 숨겨집니다. 다시 입으면 기존 배지 선택이 적용됩니다.
 - `--obs-check --background-check`는 Edge에서 OBS용 브라우저 출력을 열어 배경색과 투명도를 픽셀 단위로 확인합니다.
 - `--return-check`, `--hand-gap-check`, `--wink-check`는 팔 복귀, 손 추적 누락, 한쪽 눈 감김을 검증합니다.
+- `--hand-trace --out=<directory>`는 26초 MCU 발화 샘플과 확장 손 추적을 지원하는 VRM으로 11초·14초 구간을 분석합니다. 미리보기를 끄고 디코딩된 영상 타임스탬프, Holistic 원시 손 좌표 개수, 보조 모델의 요청·응답, 아바타에 채택된 출처를 `hand-trace.json`에 기록합니다. 재생 후 같은 영상을 다시 디코딩해 관측한 각 프레임을 같은 워커로 재검사합니다. 보조 모델에 보내지 않았던 프레임에는 시간상 가장 가까운 요청의 영역을 사용하며 `replay[].pts`와 `cropPts`로 구분합니다.
 - `node tests/fluffo/verify-streamcam.cjs`는 연결된 Logitech StreamCam을 열어 실제 장치명과 영상 프레임을 확인합니다.
 
 실행 파일을 지정하려면 `run-file-test.cjs`에 `--exe=`를 사용합니다. 영상과 모델은 각각 `--input=`, `--avatar=`로도 지정할 수 있습니다. 귀·꼬리 재생과 의상 교차 검수는 해당 리그와 의상이 들어 있는 VRM을 사용합니다.

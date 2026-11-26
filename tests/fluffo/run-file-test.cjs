@@ -107,6 +107,10 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
  }
  console.log('Loaded:',state);if(process.argv.includes('--diagnose')){await sleep(2200);console.log('lookAt present:',await ev('!!document.querySelector('+JSON.stringify('#foo')+').contentWindow.currentVrm?.lookAt'));return;}
  assert.ok(state.model && state.video>0,'Could not load video and VRM');
+ if(process.argv.includes('--hand-trace')){
+   await require('./hand-trace.cjs')({ev,output});
+   return;
+ }
  if(process.argv.includes('--performance-controls-check') && !obsCheck){
    await require('./performance-controls-check.cjs')({ev,sleep});
    return;
