@@ -1,5 +1,9 @@
+export {createIdlePlayer} from "./fluffoIdle.mjs";
+export {avatarRigProfile} from "./avatarRigProfile.mjs";
 import { createRigDriver } from "./fluffoRigDriver.mjs";
-import { createIdlePlayer } from "./fluffoIdle.mjs";
+import {slotVisibility} from './avatarRigProfile.mjs';
+import {createMcuFraming} from "./mcuFraming.mjs";
+import {mountBroadcastScene} from "./broadcastScene.mjs";
 import {createSmoothness,desktopSmoothness,mountSmoothnessPanel} from "./fluffoSmoothness.mjs";
 // In a chest-up shot Holistic can see a hand while its pose wrist is outside the image.
 // Use palm knuckles as the paw target, relative to the shoulder span of the speaker.
@@ -135,14 +139,14 @@ function armsAtSides(arm) {
     return {upper, lower};
 }
 
-export function createFluffoView(vrm, camera, controls, panelHost=null) {
-    if (vrm.meta.name !== 'Fluffo GTA VI') return null;
+export function createRigView(vrm, camera, controls, profile, bounds, panelHost=null, receiverTuning=null) {
+    if (!profile.extended) return null;
     const bone = key => vrm.humanoid.getNormalizedBoneNode(key);
     const hips = bone('hips');
     const origin = hips.position.clone();
     const position = b => b.getWorldPosition(b.position.clone());
     const span = position(bone('leftUpperArm')).distanceTo(position(bone('rightUpperArm')));
-    const lip = vrm.scene.getObjectByName('BipTeethUp');
+    const lip = (profile.mouthAnchor && vrm.scene.getObjectByName(profile.mouthAnchor)) || bone('jaw');
     const arms = ['left', 'right'].map(side => {
         const upper = bone(side+'UpperArm'), lower = bone(side+'LowerArm'), hand = bone(side+'Hand');
         const upperAxis = upper.worldToLocal(position(lower));
@@ -153,64 +157,62 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
             wristRotation:hand.quaternion.clone(), lastObserved:null, observedAt:-Infinity,
             lastWrist:null,wristAt:-Infinity,returnStart:null,palmHistory:[],exitCandidate:false};
     });
-    const defaultCamera = camera.position.clone(), defaultTarget = controls.target.clone();
+    const closeupShot=profile.mcu && {target:controls.target.clone().fromArray(profile.mcu.target),offset:camera.position.clone().fromArray(profile.mcu.offset)};
+    const baseDirection=camera.position.clone().sub(controls.target);
+    const oldNear=camera.near;
     const wrists = ['left','right'].flatMap(side => {
         const hand = vrm.humanoid.getRawBoneNode(side+'Hand');
-        const helper = vrm.scene.getObjectByName(side === 'left' ? 'BipLWrist' : 'BipRWrist');
-        if (!helper || helper.parent !== hand?.parent) return [];
+        const helper = profile.wristHelpers[side] && vrm.scene.getObjectByName(profile.wristHelpers[side]);
+        if (!hand || !helper || helper.parent !== hand.parent) return [];
         return [{hand, helper, axis:helper.position.clone().normalize(), inverse:hand.quaternion.clone().invert(),
             rest:helper.quaternion.clone(), delta:hand.quaternion.clone(), twist:hand.quaternion.clone()}];
     });
-    const playIdle = createIdlePlayer(vrm);
-    const tuning=panelHost ? desktopSmoothness() : createSmoothness();
+    const eyelids=[];
+    vrm.scene.traverse(node=>{
+        if(!node.isMesh || !node.morphTargetDictionary)return;
+        for(const side of ['Left','Right']){
+            const blink=node.morphTargetDictionary['eyeBlink'+side];
+            if(blink!==undefined)eyelids.push({weights:node.morphTargetInfluences,blink,
+                wide:node.morphTargetDictionary['eyeWide'+side]});
+        }
+    });
+    const registered=new Map();
+    for(const {weights,blink} of eyelids){
+        if(!registered.has(weights))registered.set(weights,new Set());
+        registered.get(weights).add(blink);
+    }
+    for(const key of ['blinkLeft','blinkRight','blink']){
+        const expression=vrm.expressionManager.getExpression(key);
+        for(const bind of expression?.binds ?? expression?._binds ?? []){
+            for(const mesh of bind.primitives || []){
+                const weights=mesh.morphTargetInfluences;
+                if(!weights || !Number.isInteger(bind.index) || !bind.weight)continue;
+                if(!registered.has(weights))registered.set(weights,new Set());
+                if(registered.get(weights).has(bind.index))continue;
+                registered.get(weights).add(bind.index);
+                eyelids.push({weights,blink:bind.index,weight:bind.weight});
+            }
+        }
+    }
+    const tuning=panelHost ? desktopSmoothness() : receiverTuning ?? createSmoothness({eyeRestOpen:profile.neutralEyeOpen});
+    if(receiverTuning)receiverTuning.set({...receiverTuning.values,eyeRestOpen:profile.neutralEyeOpen});
     const {values,factors}=tuning;
-    const driveRig=createRigDriver(vrm,tuning);
+    const driveRig=createRigDriver(vrm,tuning,profile.eyeFit);
     const canvas=controls.domElement;
     const mirrorSurface=panelHost ? document.getElementById('model') : canvas;
-    const originalMirror=mirrorSurface?.style.transform||'';
-    const light=vrm.scene.parent?.children.find(node=>node.isDirectionalLight);
-    const baseLight=light?.intensity;
+    const light=vrm.scene.parent.children.find(node=>node.isDirectionalLight);
+    const sceneControls=mountBroadcastScene(camera,controls,light,mirrorSurface,tuning,panelHost && window.parent.broadcastController?.saveOrbit,profile.keyYawOffset);
+    const autoCamera=closeupShot ? null : createMcuFraming(camera,baseDirection,name=>bone(name[0].toLowerCase()+name.slice(1)),bounds,sceneControls);
     let lastForwarded=null;
-    function applyCamera(closeup){
-        const target=closeup ? defaultTarget.clone().set(0,.489,0) : defaultTarget.clone();
-        const offset=closeup ? defaultCamera.clone().set(0,.020,.819) : defaultCamera.clone().sub(defaultTarget);
-        const radians=Math.PI/180;
-        const yaw=Math.atan2(offset.x,offset.z)+values.yaw*radians;
-        const pitch=clamp(Math.asin(offset.y/offset.length())+values.pitch*radians,-1.55,1.55);
-        const distance=offset.length()*values.distance;
-        target.x+=Math.cos(yaw)*values.side;
-        target.z-=Math.sin(yaw)*values.side;
-        target.y+=values.height;
-        controls.target.copy(target);
-        camera.position.copy(target).add(offset.set(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)).multiplyScalar(distance));
-        camera.fov=values.fov;
-        camera.updateProjectionMatrix();controls.update();
-    }
-    function appearance(keys){
-        if(canvas?.parentElement && (keys.includes('backgroundMode') || keys.includes('backgroundColor'))){
-            const colors={green:'#00ff00',blue:'#0000ff',transparent:'transparent',custom:values.backgroundColor};
-            // Keep the key color outside the canvas' brightness/contrast/saturation filter.
-            const backdrop=canvas.parentElement;
-            backdrop.style.backgroundColor=colors[values.backgroundMode];
-            if(backdrop.style.backgroundImage)backdrop.style.backgroundImage='';
-        }
-        if(keys.some(k=>['yaw','pitch','side','height','distance','fov'].includes(k)))applyCamera(view.active);
-        if(keys.includes('mirror') && mirrorSurface)mirrorSurface.style.transform=values.mirror==='auto'?originalMirror:values.mirror==='on'?'scaleX(-1)':'scaleX(1)';
-        if(canvas && keys.some(k=>['brightness','contrast','saturation'].includes(k))){
-            canvas.style.filter=values.brightness===1 && values.contrast===1 && values.saturation===1 ? '' :
-                'brightness('+values.brightness+') contrast('+values.contrast+') saturate('+values.saturation+')';
-        }
-        if(light && keys.some(k=>k.startsWith('light'))){
-            const az=values.lightYaw*Math.PI/180,el=values.lightPitch*Math.PI/180;
-            light.position.set(Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el));
-            light.intensity=baseLight*values.light;
-            light.color.set(values.lightColor);
-        }
-    }
     let smoothHead=headFilter();
     vrm.scene.traverse(node => { if (node.isSkinnedMesh) node.frustumCulled = false; });
     let lastTick = 0, lastFrame = null, frameArrival = 0;
+    let elbowAngle=0;
     const view = {
+        setOutfit(hidden){
+            const worn=slotVisibility(profile.wardrobe,hidden);
+            elbowAngle=Math.max(0,...profile.wardrobe.filter(slot=>worn(slot.id)).map(slot=>slot.minElbowAngle || 0));
+        },
         active:false,
         receiveControls(input){
             if(!panelHost && input && input!==lastForwarded){tuning.set(input);lastForwarded=input;}
@@ -224,7 +226,15 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
         },
         exits:{},
         updateIdle(dt) {
-            playIdle(dt);
+            // Runs immediately after vrm.update() resets and applies the tracked
+            // morphs. Measure openness relative to the neutral authored in the rig.
+            const shift=(profile.neutralEyeOpen-values.eyeRestOpen)/profile.neutralEyeOpen;
+            if(shift!==0){
+                for(const {weights,blink,wide,weight=1} of eyelids){
+                    const neutral=Math.max(0,1-weights[blink]-(weights[wide]??0));
+                    weights[blink]+=shift*neutral*weight;
+                }
+            }
             for (const {hand,helper,axis,inverse,rest,delta,twist} of wrists) {
                 delta.copy(hand.quaternion).multiply(inverse);
                 const projected = axis.x*delta.x + axis.y*delta.y + axis.z*delta.z;
@@ -233,9 +243,11 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
             }
         },
         setTarget(mode) {
+            autoCamera?.setTarget(mode);
             if (mode !== 'face') {
-                if (view.active) {
-                    applyCamera(false);
+                if (view.active && closeupShot) {
+                    camera.near=oldNear;
+                    sceneControls.setShot(null);
                 }
                 view.active = false;
                 return;
@@ -257,9 +269,10 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
             }
             view.active = true;
             hips.position.copy(origin); hips.quaternion.identity();
-            // Fixed composition for Fluffo's 0.56 m head joint and broad animal head.
-            camera.near = 0.02;
-            applyCamera(true);
+            if(closeupShot){
+                camera.near=Math.min(oldNear,closeupShot.offset.length()*.025);
+                sceneControls.setShot(closeupShot);
+            }
         },
         head(rotation,stamp=performance.now()/1000) {
             if(!view.active){
@@ -326,7 +339,7 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
                     // A single frontal camera underestimates reach toward the lens.
                     // Preserve the tracked screen target and leave room between the
                     // forearm and Fluffo's wide sleeve when the paw crosses the chest.
-                    const minReachSquared=arm.a**2+arm.b**2-2*arm.a*arm.b*Math.cos(100*Math.PI/180);
+                    const minReachSquared=arm.a**2+arm.b**2-2*arm.a*arm.b*Math.cos(elbowAngle*Math.PI/180);
                     ray.z=Math.max(ray.z,Math.sqrt(Math.max(0,minReachSquared-ray.x**2-ray.y**2)));
                     const reach = clamp(ray.length(), Math.abs(arm.a-arm.b)+0.0001, length*0.985);
                     ray.normalize();
@@ -376,9 +389,8 @@ export function createFluffoView(vrm, camera, controls, panelHost=null) {
             }
         }
     };
+    view.setOutfit([]);
     view.setTarget('face');
-    appearance(Object.keys(values));
-    tuning.onChange(appearance);
-    if(panelHost)mountSmoothnessPanel(panelHost,tuning);
+    if(panelHost)mountSmoothnessPanel(panelHost,tuning,false)(true,{},profile,JSON.parse(localStorage.getItem('modelInfo'))?.path);
     return view;
 }

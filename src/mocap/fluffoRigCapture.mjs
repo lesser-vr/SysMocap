@@ -1,3 +1,5 @@
+import {avatarRigProfile} from './avatarRigProfile.mjs';
+export {avatarRigProfile};
 import { createFaceReader } from './fluffoFaceWorker.mjs';
 import {desktopSmoothness} from './fluffoSmoothness.mjs';
 import { createHandReader } from './fluffoHandReader.mjs';
@@ -17,12 +19,10 @@ function bend(a,b,c,aspect) {
 export function fingerCurls(hand,aspect) {
     if (hand?.length!==21 || !hand.every(p=>[p.x,p.y,p.z].every(Number.isFinite))) return null;
     if (![0,5,9,13,17,8,12,16,20].some(i=>inside(hand[i]))) return null;
-    const five = humanDigits.map(([a,b,c,d])=>[
+    return humanDigits.map(([a,b,c,d])=>[
         saturate((bend(hand[0],hand[a],hand[b],aspect)-0.12)/1.35),
         saturate((0.75*bend(hand[a],hand[b],hand[c],aspect)+0.25*bend(hand[b],hand[c],hand[d],aspect)-0.07)/1.45)
     ]);
-    five[3]=five[3].map((x,i)=>0.55*x+0.45*five[4][i]);
-    return five.slice(0,4);
 }
 
 function limbSignals(results,aspect) {
@@ -45,29 +45,40 @@ function limbSignals(results,aspect) {
     return signals;
 }
 
-export function createRigCapture(video) {
-    // The discrete capture window has no renderer. Identify the actual VRM from
-    // its JSON header so imports with a user-chosen filename also work.
-    let enabled=false;
+export function readAvatarHeader(modelPath) {
+    if(!modelPath)return null;
     try {
-        const descriptor=JSON.parse(localStorage.getItem('modelInfo'));
-        const fs=window.require('fs'), path=descriptor.path;
-        const file=path.startsWith('file:') ? window.require('url').fileURLToPath(path) : path;
-        if (/\.vrm$/i.test(file) && fs.existsSync(file)) {
-            const fd=fs.openSync(file,'r');
-            try {
-                const header=Buffer.alloc(20); fs.readSync(fd,header,0,20,0);
-                const length=header.readUInt32LE(12);
-                if (header.toString('ascii',0,4)==='glTF' && length<=fs.fstatSync(fd).size-20) {
-                    const json=Buffer.alloc(length); fs.readSync(fd,json,0,length,20);
-                    enabled=JSON.parse(json).extensions?.VRMC_vrm?.meta?.name==='Fluffo GTA VI';
-                }
-            } finally {fs.closeSync(fd);}
-        }
-    } catch(error) { console.warn('Fluffo rig identification:',error); }
+        const fs=window.require('fs'),path=window.require('path');
+        let file=modelPath.startsWith('file:')?window.require('url').fileURLToPath(modelPath):modelPath;
+        if(file.startsWith('../models/'))file=path.join(window.require('@electron/remote').app.getAppPath(),'models',file.slice(10));
+        if(!path.isAbsolute(file) || !/\.(vrm|glb)$/i.test(file))return null;
+        const fd=fs.openSync(file,'r');
+        try {
+            const header=Buffer.alloc(20);
+            if(fs.readSync(fd,header,0,20,0)!==20 || header.toString('ascii',0,4)!=='glTF' || header.toString('ascii',16,20)!=='JSON')return null;
+            const length=header.readUInt32LE(12);
+            if(length>fs.fstatSync(fd).size-20)return null;
+            const json=Buffer.alloc(length);
+            return fs.readSync(fd,json,0,length,20)===length?JSON.parse(json):null;
+        }finally{fs.closeSync(fd);}
+    }catch{return null;}
+}
+export function supportsExtendedTracking(path){
+    return avatarRigProfile(readAvatarHeader(path)).extended;
+}
+
+export function createRigCapture(video,enabled) {
+    const tuning=desktopSmoothness();
+    const preview=video.closest('.preview');
+    if(preview){
+        // Keep the source and its video-frame callbacks alive while hiding the
+        // input, skeleton overlay and camera label together.
+        const showPreview=()=>{preview.style.visibility=tuning.values.cameraPreview?'':'hidden';};
+        showPreview();
+        tuning.onChange(keys=>{if(keys.includes('cameraPreview'))showPreview();});
+    }
     if (!enabled) return ()=>null;
     const readFace=createFaceReader(video);
-    const tuning=desktopSmoothness();
     const readHands=createHandReader(video);
     return results=>{
         const aspect=video.videoHeight/(video.videoWidth||1);

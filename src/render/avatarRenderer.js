@@ -1,4 +1,6 @@
-import { createFluffoView } from "fluffo-mcu";
+import {bindWardrobe,readWardrobe,wardrobeStorageKey} from "avatar-wardrobe";
+import {trackingDriver} from "humanoid-tracking";
+import { createRigView,createIdlePlayer,avatarRigProfile } from "fluffo-mcu";
 /**
  *  Shared avatar renderer (three.js scene + model load + rig + animate + record)
  *
@@ -24,6 +26,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 import { evalAxisExpr } from "./binding.js";
 import { resolveModelPath } from "./modelPath.js";
+import { createMcuFraming, measureMcuBounds, mountAvatarAppearance, mountBroadcastScene, sizeBroadcastCanvas, createOutputFrameGate } from "broadcast-scene";
+import { desktopSmoothness } from "broadcast-controls";
+import { mountAvatarOutput } from "./avatarOutput.js";
 
 /**
  * @param {object} opts
@@ -40,7 +45,10 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
     const hipRotationOffset = 0.0;
 
     let currentVrm = null;
-    let fluffoView = null;
+    let mcu;
+    let standardRig;
+    let playIdle;
+    let rigView = null;
     let skeletonHelper;
     let boneMap = null; // name -> bone, built once after load (avoids per-frame .find)
     let initRotation = {};
@@ -55,25 +63,18 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
         alpha: true,
         antialias: settings.output.antialias,
     });
-    renderer.setSize(
-        document.querySelector("#model").clientWidth,
-        (document.querySelector("#model").clientWidth / 16) * 9
-    );
-    renderer.setPixelRatio(window.devicePixelRatio);
-    document.querySelector("#model").appendChild(renderer.domElement);
-
-    window.addEventListener(
-        "resize",
-        function () {
-            orbitCamera.aspect = 16 / 9;
-            orbitCamera.updateProjectionMatrix();
-            renderer.setSize(
-                document.querySelector("#model").clientWidth,
-                (document.querySelector("#model").clientWidth / 16) * 9
-            );
-        },
-        false
-    );
+    const modelHost = document.getElementById("model");
+    function resizeStage() {
+        const width = modelHost.clientWidth;
+        const view=modelHost.ownerDocument.defaultView;
+        sizeBroadcastCanvas(renderer,width,Math.round(width*9/16),view.devicePixelRatio,
+            view===window?'native':desktopSmoothness().values.renderResolution);
+    }
+    resizeStage();
+    desktopSmoothness().onChange(keys=>{if(keys.includes('renderResolution'))resizeStage();});
+    modelHost.appendChild(renderer.domElement);
+    const stageSize = new ResizeObserver(resizeStage);
+    stageSize.observe(modelHost);
 
     // camera
     const orbitCamera = new THREE.PerspectiveCamera(35, 16 / 9, 0.1, 1000);
@@ -144,6 +145,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 model = gltf.scene;
             }
 
+            const profile=avatarRigProfile(gltf.parser?.json);
             if (fileType == "vrm") {
                 // calling these functions greatly improves the performance
                 VRMUtils.removeUnnecessaryVertices(gltf.scene);
@@ -155,7 +157,10 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 }
                 currentVrm = vrm;
                 window.currentVrm = currentVrm;
-                fluffoView = createFluffoView(vrm, orbitCamera, orbitControls, document.getElementById("controller"));
+                playIdle=createIdlePlayer(vrm);
+                const bounds=profile.extended && !profile.mcu ? measureMcuBounds(model,new THREE.Box3(),true) : null;
+                rigView=createRigView(vrm,orbitCamera,orbitControls,profile,bounds,document.getElementById("controller"));
+
             } else {
                 skeletonHelper = new THREE.SkeletonHelper(model);
                 skeletonHelper.visible = false;
@@ -201,6 +206,36 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                     initRotation = modelObj.init;
                 }
             }
+            const outfit=bindWardrobe(model,gltf.parser,profile,currentVrm?.expressionManager);
+            const key=wardrobeStorageKey(modelObj.path);
+            const updateOutfit=()=>{
+                const {hidden}=readWardrobe(key,profile);
+                outfit.apply(hidden);
+                rigView?.setOutfit(hidden);
+            };
+            updateOutfit();
+            window.addEventListener('storage',event=>{if(event.key===key || event.key===null)updateOutfit();});
+            window.addEventListener('avatar-wardrobe-change',updateOutfit);
+            if(!rigView){
+                const baseDirection=orbitCamera.position.clone().sub(orbitControls.target);
+                const sceneControls=mountBroadcastScene(orbitCamera,orbitControls,light0,modelHost,desktopSmoothness(),window.parent.broadcastController?.saveOrbit,profile.keyYawOffset);
+                const getBone=name=>currentVrm ? currentVrm.humanoid.getNormalizedBoneNode(name[0].toLowerCase()+name.slice(1)) :
+                    boneMap.get(modelObj.binding?.[name]?.name);
+                standardRig=trackingDriver(currentVrm,getBone,desktopSmoothness(),gltf.parser);
+                const bounds=measureMcuBounds(model,new THREE.Box3(),!!currentVrm);
+                mcu=createMcuFraming(orbitCamera,baseDirection,getBone,bounds,sceneControls,profile.mcu);
+            }
+            mountAvatarAppearance(THREE,scene,model,gltf.parser,desktopSmoothness(),currentVrm?.expressionManager);
+            const controller=window.parent.broadcastController;
+            const output=mountAvatarOutput(modelHost, () => {
+                resizeStage();
+                animationWindow.cancelAnimationFrame(animationFrame);
+                animationWindow=modelHost.ownerDocument.defaultView;
+                animationFrame=animationWindow.requestAnimationFrame(animate);
+            }, open => controller?.outputChanged(open),()=>desktopSmoothness().values.renderResolution);
+            window.broadcastOutput=output;
+            window.broadcastFraming=setTarget;
+            controller?.ready(!!rigView,standardRig?.caps,outfit?.parts);
         },
         (progress) =>
             console.log(
@@ -208,7 +243,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 100.0 * (progress.loaded / progress.total),
                 "%"
             ),
-        (error) => console.error(error)
+        (error) => {console.error(error);window.parent.broadcastController?.fail("아바타를 불러올 수 없습니다. 파일을 다시 선택해 주세요.");}
     );
 
     function capitalizeFirstLetterToLowerCase(str) {
@@ -225,6 +260,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
         dampener = 1,
         lerpAmount = 0.3
     ) => {
+        if(standardRig && !standardRig.canRotate(name))return;
         if (currentVrm) {
             const Part = currentVrm.humanoid.getNormalizedBoneNode(
                 capitalizeFirstLetterToLowerCase(name)
@@ -243,7 +279,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 rotation.rotationOrder || "XYZ"
             );
             let quaternion = new THREE.Quaternion().setFromEuler(euler);
-            Part.quaternion.slerp(quaternion, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
+            Part.quaternion.slerp(quaternion, rigView?.boneWeight(name,lerpAmount) ?? standardRig.weight(name,lerpAmount));
         } else if (skeletonHelper) {
             var skname = modelObj.binding[name].name; // convert name with model json binding info
             if (skname == "None") {
@@ -273,7 +309,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                     order || rotation.rotationOrder || "XYZ"
                 );
                 let quaternion = new THREE.Quaternion().setFromEuler(euler);
-                b.quaternion.slerp(quaternion, lerpAmount); // interpolate
+                b.quaternion.slerp(quaternion, standardRig.weight(name,lerpAmount)); // interpolate
             } else {
                 console.log("Can not found bone " + name);
             }
@@ -299,7 +335,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 position.y * dampener,
                 position.z * dampener
             );
-            Part.position.lerp(vector, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
+            Part.position.lerp(vector, rigView?.boneWeight(name,lerpAmount) ?? standardRig.weight(name,lerpAmount));
         } else if (skeletonHelper) {
             name = modelObj.binding[name].name; // convert name with model json binding info
             // find bone in bones by name
@@ -316,7 +352,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 if (fileType == "fbx") {
                     vector.y -= 1.2 * dampener;
                 }
-                b.position.lerp(vector, lerpAmount); // interpolate
+                b.position.lerp(vector, standardRig.weight("Hips",lerpAmount)); // interpolate
             } else {
                 console.log("Can not found bone " + name);
             }
@@ -329,71 +365,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             return; // face motion only support VRM Now
         }
 
-        // Blendshapes and Preset Name Schema
-        const Blendshape = currentVrm.expressionManager;
-        const PresetName = {
-            A: "aa",
-            Angry: "angry",
-            Blink: "blink",
-            BlinkL: "blinkLeft",
-            BlinkR: "blinkRight",
-            E: "ee",
-            Fun: "happy",
-            I: "ih",
-            Joy: "relaxed",
-            Lookdown: "lookDown",
-            Lookleft: "lookLeft",
-            Lookright: "lookRight",
-            Lookup: "lookUp",
-            Neutral: "neutral",
-            O: "oh",
-            Sorrow: "sad",
-            U: "ou",
-            Unknown: "unknown",
-        };
-
-        // Simple example without winking. Interpolate based on old blendshape, then stabilize blink with `Kalidokit` helper function.
-        // for VRM, 1 is closed, 0 is open.
-        if (!fluffoView) {
-            riggedFace.eye.l = lerp(
-                clamp(1 - riggedFace.eye.l, 0, 1),
-                Blendshape.getValue(PresetName.Blink),
-                0.4
-            );
-            riggedFace.eye.r = lerp(
-                clamp(1 - riggedFace.eye.r, 0, 1),
-                Blendshape.getValue(PresetName.Blink),
-                0.4
-            );
-            riggedFace.eye.l /= 0.8;
-            riggedFace.eye.r /= 0.8;
-            Blendshape.setValue(PresetName.BlinkL, riggedFace.eye.l);
-            Blendshape.setValue(PresetName.BlinkR, riggedFace.eye.r);
-
-            // Interpolate and set mouth blendshapes
-            Blendshape.setValue(
-                PresetName.I,
-                lerp(riggedFace.mouth.shape.I / 0.8, Blendshape.getValue(PresetName.I), 0.3)
-            );
-            Blendshape.setValue(
-                PresetName.A,
-                lerp(riggedFace.mouth.shape.A / 0.8, Blendshape.getValue(PresetName.A), 0.3)
-            );
-            Blendshape.setValue(
-                PresetName.E,
-                lerp(riggedFace.mouth.shape.E / 0.8, Blendshape.getValue(PresetName.E), 0.3)
-            );
-            Blendshape.setValue(
-                PresetName.O,
-                lerp(riggedFace.mouth.shape.O / 0.8, Blendshape.getValue(PresetName.O), 0.3)
-            );
-            Blendshape.setValue(
-                PresetName.U,
-                lerp(riggedFace.mouth.shape.U / 0.8, Blendshape.getValue(PresetName.U), 0.3)
-            );
-        }
-
-        // PUPILS — interpolate pupil and keep a copy of the value
+    // PUPILS — interpolate pupil and keep a copy of the value
         let lookTarget = new THREE.Euler(
             lerp(oldLookTarget.x, riggedFace.pupil.y, 0.4),
             lerp(oldLookTarget.y, riggedFace.pupil.x, 0.4),
@@ -411,7 +383,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
         if (!currentVrm && !skeletonHelper) {
             return;
         }
-        if (!results) return;
+        if (!results || (standardRig && !standardRig.begin(results))) return;
         let riggedPose = results.riggedPose,
             riggedLeftHand = results.riggedLeftHand,
             riggedRightHand = results.riggedRightHand,
@@ -419,15 +391,15 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
 
         // Animate Face
         if (riggedFace) {
-            const head = fluffoView ? fluffoView.head(riggedFace.head, results.fluffoRig?.frame) : riggedFace.head;
-            rigRotation("Neck", head, fluffoView ? 0.49 : 0.7);
-            if (fluffoView) rigRotation("Head", head, 0.21);
+            const head = rigView ? rigView.head(riggedFace.head, results.fluffoRig?.frame) : riggedFace.head;
+            rigRotation("Neck", head, rigView ? 0.49 : 0.7);
+            if (rigView) rigRotation("Head", head, 0.21);
             if (fileType == "vrm") rigFace(structuredClone(riggedFace));
         }
 
         // Animate Pose
         if (riggedPose) {
-            if (!fluffoView?.active) rigRotation(
+            if (!rigView?.active) rigRotation(
                 "Hips",
                 {
                     x: riggedPose.Hips.rotation.x,
@@ -436,7 +408,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
                 },
                 0.7
             );
-            if (!fluffoView?.active) rigPosition(
+            if (!rigView?.active && !mcu?.trackHips(riggedPose.Hips.position,standardRig?.weight("Hips",.07))) rigPosition(
                 "Hips",
                 {
                     x: riggedPose.Hips.position.x + positionOffset.x, // Reverse direction
@@ -461,10 +433,10 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("RightLowerLeg", riggedPose.RightLowerLeg);
         }
 
-        fluffoView?.applyHands(riggedPose?.chestUpHands);
+        rigView?.applyHands(riggedPose?.chestUpHands);
 
         // Animate Hands
-        if (riggedLeftHand && fileType == "vrm" && !fluffoView) {
+        if (riggedLeftHand && fileType == "vrm" && !rigView) {
             rigRotation("LeftHand", {
                 z: riggedPose?.LeftHand?.z ?? 0,
                 y: riggedLeftHand.LeftWrist.y,
@@ -486,7 +458,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("LeftLittleIntermediate", riggedLeftHand.LeftLittleIntermediate);
             rigRotation("LeftLittleDistal", riggedLeftHand.LeftLittleDistal);
         }
-        if (riggedRightHand && fileType == "vrm" && !fluffoView) {
+        if (riggedRightHand && fileType == "vrm" && !rigView) {
             rigRotation("RightHand", {
                 z: riggedPose?.RightHand?.z ?? 0,
                 y: riggedRightHand.RightWrist.y,
@@ -508,7 +480,7 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             rigRotation("RightLittleIntermediate", riggedRightHand.RightLittleIntermediate);
             rigRotation("RightLittleDistal", riggedRightHand.RightLittleDistal);
         }
-        fluffoView?.applyRig(results.fluffoRig, performance.now(), fluffoView.active, riggedPose?.chestUpHands, riggedFace?.mouth?.shape, riggedFace?.eye);
+        rigView?.applyRig(results.fluffoRig, performance.now(), rigView.active, riggedPose?.chestUpHands, riggedFace?.mouth?.shape, riggedFace?.eye);
     };
 
     // ---- recording (html2canvas + RecordRTC window globals) ----
@@ -547,20 +519,26 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
     }
 
     // ---- main render loop ----
-    function animate() {
-        requestAnimationFrame(animate);
+    let animationWindow = window;
+    let animationFrame;
+    const shouldDraw = createOutputFrameGate();
+    const outputSettings = desktopSmoothness().values;
+    function animate(timestamp = animationWindow.performance.now()) {
+        animationFrame = animationWindow.requestAnimationFrame(animate);
 
         if (continuousData) {
             applyRigged(continuousData());
         }
 
-        stats.update();
-
         if (currentVrm) {
             const delta = clock.getDelta();
             currentVrm.update(delta);
-            fluffoView?.updateIdle(delta);
+            standardRig?.finishFace();
+            playIdle?.(delta);
+            rigView?.updateIdle(delta);
         }
+        if (!shouldDraw(outputSettings.outputFps, animationWindow.performance.timeOrigin + timestamp)) return;
+        stats.update();
         renderer.render(scene, orbitCamera);
 
         if (isRecordingStarted)
@@ -570,26 +548,37 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
             });
     }
     animate();
+    window.addEventListener("pagehide", () => animationWindow.cancelAnimationFrame(animationFrame), {once:true});
 
-    // ---- keyboard: arrow/WASD nudge positionOffset, 'r' toggles recording ----
+    // Move the framing when the MCU owns the pelvis, and the model in other shots.
+    function nudge(x,y){
+        const controller=window.parent.broadcastController;
+        if((mcu?.active || rigView?.active) && controller?.saveOrbit){
+            const {side,height}=desktopSmoothness().values;
+            controller.saveOrbit({side:side-x,height:height-y});
+            return;
+        }
+        positionOffset.x+=x;
+        positionOffset.y+=y;
+    }
     document.addEventListener("keydown", (event) => {
         var step = 0.1;
         switch (event.key) {
             case "d":
             case "ArrowRight":
-                positionOffset.x -= step;
+                nudge(-step,0);
                 break;
             case "a":
             case "ArrowLeft":
-                positionOffset.x += step;
+                nudge(step,0);
                 break;
             case "w":
             case "ArrowUp":
-                positionOffset.y += step;
+                nudge(0,step);
                 break;
             case "s":
             case "ArrowDown":
-                positionOffset.y -= step;
+                nudge(0,-step);
                 break;
             case "r":
                 if (isRecordingStarted) {
@@ -625,7 +614,8 @@ export function createAvatarRenderer({ settings, modelObj, continuousData = null
 
     // target presets (face / half / full) — adjusts the hip position offset
     function setTarget(target) {
-        fluffoView?.setTarget(target);
+        mcu?.setTarget(target);
+        rigView?.setTarget(target);
         var zRe = 1;
         if (currentVrm) {
             zRe = currentVrm.meta.metaVersion === "1" ? -1 : 1;

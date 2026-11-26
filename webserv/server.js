@@ -34,7 +34,7 @@ app.use((req, res, next) => {
 
 app.use("/node_modules", express.static(__dirname + "/../node_modules"));
 app.use(express.static(__dirname + "/public"));
-for (const name of ['fluffoMcu.mjs','fluffoRigDriver.mjs','fluffoIdle.mjs','fluffoSmoothness.mjs']) {
+for (const name of ['avatarAppearance.mjs','avatarRigProfile.mjs','legacyRigBindings.mjs','mcuFraming.mjs','wardrobe.mjs','humanoidTracking.mjs','broadcastScene.mjs','fluffoMcu.mjs','fluffoRigDriver.mjs','fluffoIdle.mjs','fluffoSmoothness.mjs']) {
     app.get('/fluffo/'+name, (_req,res)=>res.type('text/javascript').sendFile(path.join(__dirname,'../src/mocap',name)));
 }
 

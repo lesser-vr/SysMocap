@@ -1,4 +1,7 @@
-import { createRigCapture } from "fluffo-rig-capture";
+import {readWardrobe,wardrobeStorageKey} from "avatar-wardrobe";
+import {armVisibility} from "humanoid-tracking";
+import { desktopSmoothness, receiverSettings } from "broadcast-controls";
+import { createRigCapture, avatarRigProfile, readAvatarHeader } from "fluffo-rig-capture";
 import { chestUpHands } from "fluffo-mcu";
 import { openSelectedCamera } from "./selectedCamera.mjs";
 /**
@@ -29,7 +32,26 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
     const videoElement = document.querySelector(".input_video");
     const guideCanvas = document.querySelector("canvas.guides");
     let started = false;
-    const readRig = createRigCapture(videoElement);
+    const modelPath=JSON.parse(localStorage.getItem('modelInfo'))?.path;
+    const profile=avatarRigProfile(readAvatarHeader(modelPath));
+    const readRig=createRigCapture(videoElement,fileType==='vrm' && profile.extended);
+    const outfitKey=wardrobeStorageKey(modelPath);
+    let framing=localStorage.getItem('broadcast.framing') || 'face';
+    let outfitHidden=readWardrobe(outfitKey,profile).hidden;
+    const readLevel=()=>{
+        const saved=localStorage.getItem('broadcast.bodyTrackingLevel') ?? String(settings.mediapipe.modelComplexity);
+        return ['0','1','2'].includes(saved) ? Number(saved) : 1;
+    };
+    let requestedLevel=readLevel();
+    window.addEventListener('storage',event=>{
+        if(event.key==='broadcast.bodyTrackingLevel' || event.key===null)requestedLevel=readLevel();
+        if(event.key==='broadcast.framing')framing=event.newValue || 'face';
+        if(event.key===outfitKey || event.key===null)outfitHidden=readWardrobe(outfitKey,profile).hidden;
+    });
+    window.addEventListener('avatar-wardrobe-change',()=>{outfitHidden=readWardrobe(outfitKey,profile).hidden;});
+    const tuning = desktopSmoothness();
+    let sceneControls = receiverSettings(tuning.values);
+    tuning.onChange(()=>{sceneControls=receiverSettings(tuning.values);});
 
     // Landmarks -> Kalidokit rigged data (note: MediaPipe's 3D-landmark field is
     // the mangled `results.za`, and the hand landmarks arrive reversed).
@@ -66,13 +88,14 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
         if (rightHandLandmarks && fileType == "vrm") {
             riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
         }
-        return { riggedPose, riggedLeftHand, riggedRightHand, riggedFace, fluffoRig };
+        return { framing,outfitHidden,sourceTime:videoElement.currentTime,armVisibility:armVisibility(results),riggedPose, riggedLeftHand, riggedRightHand, riggedFace, fluffoRig, sceneControls:fluffoRig ? undefined : sceneControls };
     };
 
+    let guideContext = null, guidesDrawn = false;
     const drawResults = (results) => {
-        guideCanvas.width = videoElement.videoWidth;
-        guideCanvas.height = videoElement.videoHeight;
-        let canvasCtx = guideCanvas.getContext("2d");
+        if (guideCanvas.width !== videoElement.videoWidth) guideCanvas.width = videoElement.videoWidth;
+        if (guideCanvas.height !== videoElement.videoHeight) guideCanvas.height = videoElement.videoHeight;
+        const canvasCtx = guideContext ??= guideCanvas.getContext("2d");
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
         drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
@@ -114,7 +137,11 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
     };
 
     const onResults = (results) => {
-        if (settings.preview.showSketelonOnInput) drawResults(results);
+        if(stopped)return;
+        const showGuides = tuning.values.cameraPreview && settings.preview.showSketelonOnInput;
+        if (showGuides) drawResults(results);
+        else if (guidesDrawn) guideContext.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+        guidesDrawn = showGuides;
         onRigged(solve(results));
         if (!started) {
             document.getElementById("loading")?.remove();
@@ -142,8 +169,9 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
             }
         },
     });
+    let activeLevel=requestedLevel;
     holistic.setOptions({
-        modelComplexity: parseInt(settings.mediapipe.modelComplexity),
+        modelComplexity: activeLevel,
         smoothLandmarks: settings.mediapipe.smoothLandmarks,
         minDetectionConfidence: parseFloat(settings.mediapipe.minDetectionConfidence),
         minTrackingConfidence: parseFloat(settings.mediapipe.minTrackingConfidence),
@@ -165,29 +193,67 @@ export function createHolisticPipeline({ settings, fileType, onRigged }) {
         ? "scale(-1, 1)"
         : "scale(1, 1)";
 
+    // On Windows a minimized input window can throttle video frame callbacks
+    // even as the source is playing and a separate avatar output is visible.
+    const timers = require("timers");
+    let inFlight, pendingFrame, watchdog, stopped = false, lastTime = -1;
+    function scheduleCapture(fallback = false) {
+        if (stopped) return;
+        pendingFrame = videoElement.requestVideoFrameCallback(() => capture(false));
+        watchdog = timers.setTimeout(() => capture(true), fallback ? 33 : 140);
+    }
+    async function capture(fallback) {
+        if (stopped) return;
+        timers.clearTimeout(watchdog);
+        videoElement.cancelVideoFrameCallback(pendingFrame);
+        if (videoElement.readyState >= 2 && videoElement.currentTime !== lastTime) {
+            lastTime = videoElement.currentTime;
+            try{
+                // Apply graph changes between sends, when the previous inference has finished.
+                if(activeLevel!==requestedLevel){
+                    holistic.setOptions({modelComplexity:requestedLevel});
+                    activeLevel=requestedLevel;
+                }
+                inFlight=holistic.send({image:videoElement});
+                await inFlight;
+            }catch{inputFailed('추적을 시작할 수 없습니다. 입력을 확인하고 다시 시도해 주세요.');return;}
+        }
+        scheduleCapture(fallback);
+    }
+    function stopCapture(){
+        stopped = true;
+        videoElement.srcObject?.getTracks().forEach(track=>track.stop());
+        timers.clearTimeout(watchdog);
+        videoElement.cancelVideoFrameCallback(pendingFrame);
+        return inFlight?.catch(()=>{});
+    }
+    window.stopBroadcastCapture=stopCapture;
+    window.addEventListener("pagehide",stopCapture,{once:true});
+    function inputFailed(message){
+        if(stopped)return;
+        if(window.parent.broadcastController) window.parent.broadcastController.fail(message);
+        else require('electron').ipcRenderer.send('broadcast-input-error',message);
+    }
+    videoElement.addEventListener('error',()=>inputFailed('영상을 열 수 없습니다. 파일 위치와 형식을 확인해 주세요.'),{once:true});
     if (useCamera) {
         openSelectedCamera()
             .then(function (stream) {
+                if(stopped){stream.getTracks().forEach(track=>track.stop());return;}
+                const track=stream.getVideoTracks()[0];
+                track?.addEventListener('ended',()=>inputFailed('카메라 연결이 끊겼습니다. 장치를 확인하고 다시 연결해 주세요.'),{once:true});
                 videoElement.srcObject = stream;
                 videoElement.play();
-                var videoFrameCallback = async () => {
-                    await holistic.send({ image: videoElement });
-                    videoElement.requestVideoFrameCallback(videoFrameCallback);
-                };
-                videoElement.requestVideoFrameCallback(videoFrameCallback);
+                scheduleCapture();
             })
             .catch(function (err0r) {
-                alert(err0r);
+                inputFailed(err0r.message);
             });
     } else {
-        videoElement.src = localStorage.getItem("videoFile");
+        const source=localStorage.getItem("videoFile") || "";
+        videoElement.src = require("path").isAbsolute(source) ? require("url").pathToFileURL(source).href : source;
         videoElement.loop = true;
         videoElement.controls = true;
-        var videoFrameCallback = async () => {
-            await holistic.send({ image: videoElement });
-            videoElement.requestVideoFrameCallback(videoFrameCallback);
-        };
-        videoElement.requestVideoFrameCallback(videoFrameCallback);
+        scheduleCapture();
     }
 
     return { videoElement, guideCanvas };

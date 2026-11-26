@@ -67,9 +67,13 @@ export default defineConfig({
         rollupOptions: {
             // These shared modules also run unbundled in the OBS receiver. Their
             // workers read model/WASM files relative to the source module URL.
-            external: ["fluffo-mcu", "fluffo-rig-capture"],
+            external: ["fluffo-mcu", "fluffo-rig-capture", "broadcast-controls", "broadcast-scene","humanoid-tracking","avatar-wardrobe"],
             output: {
                 paths: {
+                    "avatar-wardrobe": "../../src/mocap/wardrobe.mjs",
+                    "humanoid-tracking": "../../src/mocap/humanoidTracking.mjs",
+                    "broadcast-scene": "../../src/mocap/broadcastScene.mjs",
+                    "broadcast-controls": "../../src/mocap/fluffoSmoothness.mjs",
                     "fluffo-mcu": "../../src/mocap/fluffoMcu.mjs",
                     "fluffo-rig-capture": "../../src/mocap/fluffoRigCapture.mjs",
                 },

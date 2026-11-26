@@ -60,7 +60,7 @@ function getSettings() {
                 supportForWebXR: "false",
             },
             mediapipe: {
-                modelComplexity: "2",
+                modelComplexity: "1",
                 smoothLandmarks: true,
                 minDetectionConfidence: "0.7",
                 minTrackingConfidence: "0.7",
@@ -82,6 +82,8 @@ function getSettings() {
     // that would discard all existing user settings (the gate above). New fields
     // just default in when missing from a previously-saved settings object.
     if (settings.ui.useLiquidGlass === undefined) settings.ui.useLiquidGlass = macOS26Plus;
+    const level = String(settings.mediapipe.modelComplexity);
+    settings.mediapipe.modelComplexity = ["0","1","2"].includes(level) ? level : "1";
     return settings;
 }
 

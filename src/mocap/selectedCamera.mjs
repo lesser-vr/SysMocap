@@ -13,7 +13,7 @@ export async function openSelectedCamera() {
     const byId = devices.find(d => d.deviceId === selectedId && selectedId && (!label || !d.label || d.label === label));
     const byName = devices.filter(d => label && d.label === label);
     const device = byId || (byName.length === 1 ? byName[0] : null);
-    if (!device?.deviceId) throw new Error("카메라를 찾을 수 없습니다. setting → Input에서 카메라를 다시 선택하세요. " + (label || ""));
+    if (!device?.deviceId) throw new Error("카메라를 찾을 수 없습니다. 카메라 목록에서 장치를 다시 선택하세요. " + (label || ""));
     let stream;
     try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -27,7 +27,7 @@ export async function openSelectedCamera() {
         const status = document.createElement("span");
         status.textContent = "카메라 · " + (track.label || label || device.deviceId);
         Object.assign(status.style, { position: "fixed", zIndex: "1001", top: "14px", left: getComputedStyle(video).left,
-            color: "white", background: "#202124db", padding: "3px 7px", pointerEvents: "none", font: "13px sans-serif" });
+            color: "white", background: "#202124db", padding: "3px 7px", pointerEvents: "none", font: '13px "Pretendard Variable", sans-serif' });
         video.parentElement.appendChild(status);
         return stream;
     } catch (error) {

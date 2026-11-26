@@ -1,3 +1,5 @@
+import {bindWardrobe} from "/fluffo/wardrobe.mjs";
+import {trackingDriver} from "/fluffo/humanoidTracking.mjs";
 /**
  *  Web Render Part with WebXR API
  *
@@ -26,20 +28,25 @@ import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import Stats from "three/addons/libs/stats.module.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
-import { createFluffoView } from "/fluffo/fluffoMcu.mjs";
+import { createMcuFraming, measureMcuBounds, mountAvatarAppearance, mountBroadcastScene, sizeBroadcastCanvas, createOutputFrameGate } from "/fluffo/broadcastScene.mjs";
+import { createSmoothness } from "/fluffo/fluffoSmoothness.mjs";
+import { createRigView,createIdlePlayer,avatarRigProfile } from "/fluffo/fluffoMcu.mjs";
 
 
 /* THREEJS WORLD SETUP */
 let currentVrm;
-let fluffoView;
+let mcu;
+let standardRig,wardrobe,previousOutfit;
+let playIdle;
+let rigView;
+const sceneTuning=createSmoothness();
+let appliedSceneControls,activeFraming;
 
 var mocapData = null;
 
 
 // renderer
 const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
 
 const useXRres = await fetch("/useWebXR");
 const useXR = await useXRres.json();
@@ -64,6 +71,16 @@ const orbitCamera = new THREE.PerspectiveCamera(
     1000
 );
 orbitCamera.position.set(0.0, 1.1, 1.8);
+function resizeBroadcast(){
+    if(renderer.xr.isPresenting || !window.innerHeight)return;
+    sizeBroadcastCanvas(renderer,window.innerWidth,window.innerHeight,window.devicePixelRatio,sceneTuning.values.renderResolution);
+    orbitCamera.aspect=window.innerWidth/window.innerHeight;
+    orbitCamera.updateProjectionMatrix();
+}
+resizeBroadcast();
+window.addEventListener('resize',resizeBroadcast);
+renderer.xr.addEventListener('sessionend',resizeBroadcast);
+sceneTuning.onChange(keys=>{if(keys.includes('renderResolution'))resizeBroadcast();});
 
 // controls
 const orbitControls = new OrbitControls(orbitCamera, renderer.domElement);
@@ -131,6 +148,7 @@ loader.load(
             model = gltf.scene;
         }
 
+        const profile=avatarRigProfile(gltf.parser?.json);
         if (fileType == "vrm") {
             // calling these functions greatly improves the performance
             VRMUtils.removeUnnecessaryVertices(gltf.scene);
@@ -142,11 +160,9 @@ loader.load(
             }
             currentVrm = vrm;
             window.currentVrm = currentVrm;
-            fluffoView = createFluffoView(vrm, orbitCamera, orbitControls);
-            if(fluffoView) {
-                orbitCamera.fov=35;
-                orbitCamera.updateProjectionMatrix();
-            }
+            playIdle=createIdlePlayer(vrm);
+            const bounds=profile.extended && !profile.mcu ? measureMcuBounds(model,new THREE.Box3(),true) : null;
+            rigView=createRigView(vrm,orbitCamera,orbitControls,profile,bounds,null,sceneTuning);
         } else {
             skeletonHelper = new THREE.SkeletonHelper(model);
             skeletonHelper.visible = false;
@@ -191,6 +207,17 @@ loader.load(
                 initRotation = modelObj.init;
             }
         }
+        wardrobe=bindWardrobe(model,gltf.parser,profile,currentVrm?.expressionManager);
+        if(!rigView){
+                const baseDirection=orbitCamera.position.clone().sub(orbitControls.target);
+                const sceneControls=mountBroadcastScene(orbitCamera,orbitControls,light0,renderer.domElement,sceneTuning,undefined,profile.keyYawOffset);
+                const getBone=name=>currentVrm ? currentVrm.humanoid.getNormalizedBoneNode(name[0].toLowerCase()+name.slice(1)) :
+                    skeletonHelper.bones.find(b=>b.name===modelObj.binding?.[name]?.name);
+                standardRig=trackingDriver(currentVrm,getBone,sceneTuning,gltf.parser);
+                const bounds=measureMcuBounds(model,new THREE.Box3(),!!currentVrm);
+                mcu=createMcuFraming(orbitCamera,baseDirection,getBone,bounds,sceneControls,profile.mcu);
+            }
+        mountAvatarAppearance(THREE,scene,model,gltf.parser,sceneTuning,currentVrm?.expressionManager);
     },
 
     (progress) =>
@@ -217,6 +244,7 @@ const rigRotation = (
     dampener = 1,
     lerpAmount = 0.3
 ) => {
+        if(standardRig && !standardRig.canRotate(name))return;
     if (currentVrm) {
         const Part = currentVrm.humanoid.getNormalizedBoneNode(
             capitalizeFirstLetterToLowerCase(name)
@@ -235,7 +263,7 @@ const rigRotation = (
             rotation.rotationOrder || "XYZ"
         );
         let quaternion = new THREE.Quaternion().setFromEuler(euler);
-        Part.quaternion.slerp(quaternion, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
+        Part.quaternion.slerp(quaternion, rigView?.boneWeight(name,lerpAmount) ?? standardRig.weight(name,lerpAmount));
     } else if (skeletonHelper) {
         var skname = modelObj.binding[name].name; // convert name with model json binding info
         if (skname == "None") {
@@ -265,7 +293,7 @@ const rigRotation = (
                 order || rotation.rotationOrder || "XYZ"
             );
             let quaternion = new THREE.Quaternion().setFromEuler(euler);
-            b.quaternion.slerp(quaternion, lerpAmount); // interpolate
+            b.quaternion.slerp(quaternion, standardRig.weight(name,lerpAmount)); // interpolate
         } else {
             console.log("Can not found bone " + name);
         }
@@ -291,7 +319,7 @@ const rigPosition = (
             position.y * dampener,
             position.z * dampener
         );
-        Part.position.lerp(vector, fluffoView?.boneWeight(name,lerpAmount) ?? lerpAmount);
+        Part.position.lerp(vector, rigView?.boneWeight(name,lerpAmount) ?? standardRig.weight(name,lerpAmount));
     } else if (skeletonHelper) {
         name = modelObj.binding[name].name; // convert name with model json binding info
         // find bone in bones by name
@@ -308,7 +336,7 @@ const rigPosition = (
             if (fileType == "fbx") {
                 vector.y -= 1.2 * dampener;
             }
-            b.position.lerp(vector, lerpAmount); // interpolate
+            b.position.lerp(vector, standardRig.weight("Hips",lerpAmount)); // interpolate
         } else {
             console.log("Can not found bone " + name);
         }
@@ -321,94 +349,7 @@ const rigFace = (riggedFace) => {
         return; // face motion only support VRM Now
     }
 
-    // Blendshapes and Preset Name Schema
-    const Blendshape = currentVrm.expressionManager;
-    const PresetName = {
-        A: "aa",
-        Angry: "angry",
-        Blink: "blink",
-        BlinkL: "blinkLeft",
-        BlinkR: "blinkRight",
-        E: "ee",
-        Fun: "happy",
-        I: "ih",
-        Joy: "relaxed",
-        Lookdown: "lookDown",
-        Lookleft: "lookLeft",
-        Lookright: "lookRight",
-        Lookup: "lookUp",
-        Neutral: "neutral",
-        O: "oh",
-        Sorrow: "sad",
-        U: "ou",
-        Unknown: "unknown",
-    };
-
-    // Simple example without winking. Interpolate based on old blendshape, then stabilize blink with `Kalidokit` helper function.
-    // for VRM, 1 is closed, 0 is open.
-    riggedFace.eye.l = lerp(
-        clamp(1 - riggedFace.eye.l, 0, 1),
-        Blendshape.getValue(PresetName.Blink),
-        0.4
-    );
-    riggedFace.eye.r = lerp(
-        clamp(1 - riggedFace.eye.r, 0, 1),
-        Blendshape.getValue(PresetName.Blink),
-        0.4
-    );
-    // riggedFace.eye = Kalidokit.Face.stabilizeBlink(
-    //     {l:riggedFace.eye.l,r:riggedFace.eye.l},
-    //     riggedFace.head.y
-    // );
-    
-    riggedFace.eye.l /= 0.8;
-    riggedFace.eye.r /= 0.8;
-    Blendshape.setValue(PresetName.BlinkL, riggedFace.eye.l);
-    Blendshape.setValue(PresetName.BlinkR, riggedFace.eye.r);
-
-    // Interpolate and set mouth blendshapes
-    Blendshape.setValue(
-        PresetName.I,
-        lerp(
-            riggedFace.mouth.shape.I / 0.8,
-            Blendshape.getValue(PresetName.I),
-            0.3
-        )
-    );
-    Blendshape.setValue(
-        PresetName.A,
-        lerp(
-            riggedFace.mouth.shape.A / 0.8,
-            Blendshape.getValue(PresetName.A),
-            0.3
-        )
-    );
-    Blendshape.setValue(
-        PresetName.E,
-        lerp(
-            riggedFace.mouth.shape.E / 0.8,
-            Blendshape.getValue(PresetName.E),
-            0.3
-        )
-    );
-    Blendshape.setValue(
-        PresetName.O,
-        lerp(
-            riggedFace.mouth.shape.O / 0.8,
-            Blendshape.getValue(PresetName.O),
-            0.3
-        )
-    );
-    Blendshape.setValue(
-        PresetName.U,
-        lerp(
-            riggedFace.mouth.shape.U / 0.8,
-            Blendshape.getValue(PresetName.U),
-            0.3
-        )
-    );
-
-    //PUPILS
+//PUPILS
     //interpolate pupil and keep a copy of the value
     let lookTarget = new THREE.Euler(
         lerp(oldLookTarget.x, riggedFace.pupil.y, 0.4),
@@ -426,7 +367,20 @@ const animateVRM = (vrm, results) => {
         return;
     }
     if(!results) return;
-    fluffoView?.receiveControls(results.fluffoRig?.liveControls);
+    const mode=results.framing || 'face';
+    if(mode!==activeFraming){
+        activeFraming=mode;mcu?.setTarget(mode);rigView?.setTarget(mode);
+    }
+    if(rigView)rigView.receiveControls(results.fluffoRig?.liveControls);
+    else if(results.sceneControls && results.sceneControls!==appliedSceneControls){
+        appliedSceneControls=results.sceneControls;
+        sceneTuning.set(appliedSceneControls);
+    }
+    if(wardrobe && previousOutfit!==results.outfitHidden){
+        previousOutfit=results.outfitHidden;
+        if(wardrobe.apply(previousOutfit))rigView?.setOutfit(previousOutfit);
+    }
+    if(standardRig && !standardRig.begin(results))return;
     // Take the results from `Holistic` and animate character based on its Face, Pose, and Hand Keypoints.
     let riggedPose = results.riggedPose,
         riggedLeftHand = results.riggedLeftHand,
@@ -435,21 +389,21 @@ const animateVRM = (vrm, results) => {
 
     // Animate Face
     if (riggedFace ) {
-        const head=fluffoView ? fluffoView.head(riggedFace.head,results.fluffoRig?.frame) : riggedFace.head;
-        rigRotation("Neck", head, fluffoView ? .49 : .7);
-        if(fluffoView) rigRotation("Head",head,.21);
+        const head=rigView ? rigView.head(riggedFace.head,results.fluffoRig?.frame) : riggedFace.head;
+        rigRotation("Neck", head, rigView ? .49 : .7);
+        if(rigView) rigRotation("Head",head,.21);
         else if (fileType == "vrm") rigFace(JSON.parse(JSON.stringify(riggedFace)));
     }
 
     // Animate Pose
     if (riggedPose) {
-        if(!fluffoView) rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
-        if(!fluffoView) rigPosition(
+        if(!rigView?.active) rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
+        if(!rigView?.active && !mcu?.trackHips(riggedPose.Hips.position,standardRig?.weight("Hips",.07))) rigPosition(
             "Hips",
             {
                 x: riggedPose.Hips.position.x, // Reverse direction
-                y: riggedPose.Hips.position.y + 1, // Add a bit of height
-                z: -riggedPose.Hips.position.z, // Reverse direction
+                y: riggedPose.Hips.position.y + (mode==='full'?1.4:mode==='half'?1.1:1), // Add a bit of height
+                z: -riggedPose.Hips.position.z + (mode==='full'?2:mode==='half'?1:0)*(currentVrm?.meta.metaVersion==='1'?-1:1), // Reverse direction
             },
             1,
             0.07
@@ -470,13 +424,13 @@ const animateVRM = (vrm, results) => {
     }
 
     // Animate Hands
-    if(fluffoView){
+    if(rigView){
         const hands=riggedPose?.chestUpHands;
         const now=performance.now();
-        fluffoView.applyHands(hands,now);
-        fluffoView.applyRig(results.fluffoRig,now,true,hands,riggedFace?.mouth?.shape,riggedFace?.eye);
+        rigView.applyHands(hands,now);
+        rigView.applyRig(results.fluffoRig,now,rigView.active,hands,riggedFace?.mouth?.shape,riggedFace?.eye);
     }
-    if (riggedLeftHand && riggedPose && fileType == "vrm" && !fluffoView) {
+    if (riggedLeftHand && riggedPose && fileType == "vrm" && !rigView) {
         rigRotation("LeftHand", {
             // Combine pose rotation Z and hand rotation X Y
             z: riggedPose.LeftHand.z,
@@ -514,7 +468,7 @@ const animateVRM = (vrm, results) => {
         );
         rigRotation("LeftLittleDistal", riggedLeftHand.LeftLittleDistal);
     }
-    if (riggedRightHand && riggedPose && fileType == "vrm" && !fluffoView) {
+    if (riggedRightHand && riggedPose && fileType == "vrm" && !rigView) {
         // riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
         rigRotation("RightHand", {
             // Combine Z axis from pose hand and X/Y axis from hand wrist rotation
@@ -557,15 +511,19 @@ const animateVRM = (vrm, results) => {
 };
 
 
-function animate() {
+const shouldDraw = createOutputFrameGate();
+function animate(timestamp) {
     animateVRM(currentVrm, mocapData);
     if (currentVrm) {
         // Update model to render physics
         const dt=clock.getDelta();
         currentVrm.update(dt);
-        fluffoView?.updateIdle(dt);
+            standardRig?.finishFace();
+        playIdle?.(dt);
+        rigView?.updateIdle(dt);
     }
-    renderer.render(scene, orbitCamera);
+    if (renderer.xr.isPresenting || shouldDraw(sceneTuning.values.outputFps, timestamp))
+        renderer.render(scene, orbitCamera);
 }
 renderer.setAnimationLoop(animate);
 

@@ -19,6 +19,44 @@ function rig(tuning) {
     };
 }
 
+test('optional open lids reject uncertain closures but register a wink and a short bilateral blink',()=>{
+    const tuning=createSmoothness(),tick=rig(tuning);
+    let ms=1000;
+    const pose=(l,r)=>{
+        ms+=40;
+        return tick(ms,{frame:ms/1000,scores:{eyeBlinkLeft:l,eyeBlinkRight:r,eyeWideLeft:.55,eyeSquintLeft:.48}});
+    };
+    assert.equal(tuning.values.holdOpenEyes,false);
+    assert.ok(pose(.6,.5).blink>.2);
+    tuning.set({...tuning.values,holdOpenEyes:true});
+    let v;
+    for(let i=0;i<30;i++)v=pose(i%2?.65:.35,i%2?.50:.25);
+    for(const k of ['blink','blinkLeft','blinkRight','eyeWideLeft','eyeSquintLeft'])assert.ok(v[k]<.001);
+    v=pose(.95,.25);assert.ok(v.blinkLeft>.85 && v.blink<.001);
+    v=pose(.65,.28);assert.ok(v.blinkLeft>.98 && v.blinkRight<.001);
+    v=pose(1,1);assert.ok(v.blink>.85);
+    for(let i=0;i<10;i++)v=pose(.25,.28);
+    assert.ok(v.blink+v.blinkLeft+v.blinkRight<.001);
+    tuning.set({...tuning.values,holdOpenEyes:false});
+    v=pose(.62,.62);
+    assert.ok(v.blink>.45 && v.eyeSquintLeft>.1 && v.eyeWideLeft>.05);
+});
+
+test('resting upward brows agree with neutral while deliberate and asymmetric lifts survive',()=>{
+    assert.equal(createSmoothness().values.browRest,.70);
+    const rest=facialTargets({browInnerUp:.70,browOuterUpLeft:.69,browOuterUpRight:.35});
+    assert.deepEqual([rest.surprised,rest.browOuterUpLeft,rest.browOuterUpRight],[0,0,0]);
+    const lift=facialTargets({browInnerUp:1,browOuterUpLeft:.8,browOuterUpRight:.12});
+    assert.equal(lift.surprised,1);
+    assert.ok(lift.browOuterUpLeft>0 && lift.browOuterUpLeft<1 && lift.browOuterUpRight===0);
+    const scores={browInnerUp:.35,browDownLeft:.42,eyeWideRight:.33,mouthPucker:.3};
+    const a=facialTargets(scores,null,.18),b=facialTargets(scores);
+    assert.ok(a.surprised>0 && b.surprised===0);
+    for(const key of ['browDownLeft','eyeWideRight','mouthPucker'])assert.equal(a[key],b[key]);
+    const tick=rig(createSmoothness({emotion:'surprised',browRest:.7}));
+    assert.ok(tick(1000,{frame:1,scores:{browInnerUp:0}}).surprised>.6);
+});
+
 for(const [channel,shape] of Object.entries({mouth:'aa',blink:'blink',expression:'surprised'})){
     test(channel+' smoothing changes its own step response independently',()=>{
         function step(amount){
@@ -121,8 +159,50 @@ test('noisy gaze cannot move the held eyelid or suppress gaze on the open side',
     assert.equal(wink.lookLeft+wink.eyeLookInRight,moving.lookLeft+moving.eyeLookInRight);
 });
 
+test('resting eye noise holds still while a small deliberate glance and a one-frame blink respond',()=>{
+    const eye=new Object3D(),output={};
+    const drive=createRigDriver({
+        humanoid:{getNormalizedBoneNode:k=>k==='leftEye'?eye:null},
+        expressionManager:{expressions:['blink','blinkLeft','eyeLookOutLeft','eyeSquintLeft'].map(expressionName=>({expressionName})),
+            setValue:(k,v)=>output[k]=v}
+    });
+    function tick(ms,noise=0,shift=0,blink=.18){
+        const scores={eyeBlinkLeft:blink+noise,eyeSquintLeft:.38+noise,eyeLookOutLeft:.16+noise+shift};
+        drive({frame:ms/1000,scores},ms);
+        return [output.blink+output.blinkLeft,output.eyeSquintLeft,output.eyeLookOutLeft,eye.rotation.y];
+    }
+    for(let ms=1000;ms<2200;ms+=20)tick(ms);
+    const still=tick(2200);
+    for(let ms=2220;ms<=2600;ms+=20){
+        const v=tick(ms,(ms%40===0?1:-1)*.028);
+        v.forEach((n,i)=>assert.ok(Math.abs(n-still[i])<.00001));
+    }
+    const glance=tick(2620,0,.09);
+    assert.ok(glance[2]>still[2]+.01 && glance[3]>still[3]);
+    const blink=tick(2640,0,0,1);
+    assert.ok(blink[0]>.65 && tick(2660,0,0,0)[0]<blink[0]);
+});
+
 test('an already late result is ignored and seeking allows earlier fresh timestamps',()=>{
     const tick=rig(),scores={jawOpen:1};
     assert.equal(tick(2000,{frame:2,faceStamp:1.98,faceAgeMs:220,scores}).aa,0);
     assert.ok(tick(2020,{frame:.5,faceStamp:.5,faceAgeMs:5,scores}).aa>.3);
+});
+
+test('open eyes hold their resting pose through asymmetric blink and squint noise',()=>{
+    const tick=rig();
+    const squint=[.31,.46,.36,.43];
+    let rest;
+    for(let i=0;i<100;i++){
+        const ms=1000+i*40;
+        const v=tick(ms,{frame:ms/1000,scores:{
+            eyeBlinkLeft:[.11,.19][i%2],eyeBlinkRight:[.22,.305][i%2],
+            eyeSquintLeft:i<16 ? .385 : squint[i%4]
+        }});
+        assert.equal(v.blink+v.blinkLeft+v.blinkRight,0);
+        if(i===30)rest=v.eyeSquintLeft;
+        if(i>30)assert.ok(Math.abs(v.eyeSquintLeft-rest)<.001);
+    }
+    const deliberate=tick(5000,{frame:5,scores:{eyeSquintLeft:.8,eyeBlinkLeft:.50,eyeBlinkRight:.15}});
+    assert.ok(deliberate.eyeSquintLeft>rest+.1 && deliberate.blinkLeft>.35);
 });
