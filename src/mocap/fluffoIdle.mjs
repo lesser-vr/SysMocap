@@ -1,9 +1,14 @@
-// Original Animaze idle1, sampled in the exported joints' local coordinates.
-// Its ear and tail keys continue playing even without a tracking packet.
+import {legacyBindings} from './legacyRigBindings.mjs';
+
+// Local joint tracks continue playing between tracking observations.
 export function createIdlePlayer(vrm) {
     let clip;
-    vrm.scene.traverse(node => { if (node.userData.fluffoAnimazeIdle) clip = node.userData.fluffoAnimazeIdle.idle1; });
-    if (!clip) return () => {};
+    vrm.scene.traverse(node=>{
+        const {sysmocapIdle,sysmocapClips}=node.userData;
+        const idle=typeof sysmocapIdle==='string'?sysmocapClips?.[sysmocapIdle]:sysmocapIdle;
+        clip ??= idle ?? node.userData[legacyBindings.idleTag]?.[legacyBindings.idleClip];
+    });
+    if (!(clip?.duration>0 && clip.fps>0 && clip.tracks)) return () => {};
     const tracks = Object.entries(clip.tracks).flatMap(([name, track]) => {
         const joint = vrm.scene.getObjectByName(name);
         if (!joint) return [];
@@ -16,6 +21,7 @@ export function createIdlePlayer(vrm) {
         for (const [joint, track, vector, rotation] of tracks) {
             for (const [key, field] of [['p','position'], ['s','scale'], ['q','quaternion']]) {
                 const values = track[key], target = joint[field];
+                if(!values?.length)continue;
                 const a = Math.min(i, values.length - 1), b = Math.min(a + 1, values.length - 1);
                 target.fromArray(values[a]);
                 if (a === b) continue;

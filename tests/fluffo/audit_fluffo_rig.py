@@ -65,7 +65,8 @@ def main():
     def textures(m):
         return {n['name']:hashlib.sha256(m.view(n['bufferView'])).hexdigest() for n in m.doc['images']}
     binds=model['expressions']
-    idle=next(n['extras']['fluffoAnimazeIdle']['idle1'] for n in nodes if 'fluffoAnimazeIdle' in n.get('extras',{}))
+    idle=next(clips['idle1'] for n in nodes for e in [n.get('extras', {})]
+              for clips in [e.get('sysmocapClips') or e.get('fluffoAnimazeIdle') or {}] if 'idle1' in clips)
     def route(i,weight):
         name=nodes[i]['name']
         if name in idle['tracks']:return 'Animaze idle1 local track'
