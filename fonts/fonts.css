@@ -1,3 +1,5 @@
+@import url("./pretendard/hangul.css");
+
 @font-face {
     font-family: "NowarRounded";
     src: url("ARHei.ttf");
@@ -32,4 +34,3 @@
     -webkit-font-feature-settings: 'liga';
     -webkit-font-smoothing: antialiased;
   }
-  
