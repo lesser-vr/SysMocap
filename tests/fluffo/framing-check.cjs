@@ -1,0 +1,55 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+module.exports=async function({ev,edge,send,sleep,output,name}){
+    const inspect=`const scene=vrm.scene.parent;
+        const camera=await new Promise(ok=>{const last=scene.onAfterRender;scene.onAfterRender=(r,s,c)=>{scene.onAfterRender=last;ok(c);};});
+        const ndc=k=>{const b=vrm.humanoid.getRawBoneNode(k);return b.getWorldPosition(b.position.clone()).project(camera).toArray().slice(0,2);};
+        return {camera:camera.position.toArray(),fov:camera.fov,head:ndc('head'),left:ndc('leftUpperArm'),right:ndc('rightUpperArm')};`;
+    const local=()=>ev(`(async()=>{const vrm=document.querySelector('#foo').contentWindow.currentVrm;${inspect}})()`);
+    const remote=async()=>(await edge.send('Runtime.evaluate',{expression:`(async()=>{const vrm=window.currentVrm;${inspect}})()`,returnByValue:true,awaitPromise:true})).result.value;
+    const shot=async(mode)=>{await ev("sysmocapApp.framing="+JSON.stringify(mode));await sleep(180);};
+    const near=(a,b)=>assert.ok(a.length===b.length && a.every((v,i)=>Math.abs(v-b[i])<.002),JSON.stringify({a,b}));
+    const base=await local(),other=await remote();
+    near(base.camera,other.camera);
+    console.log(name,'MCU',JSON.stringify(base));
+    assert.ok(Math.abs(base.head[0])<.5 && Math.abs(base.head[1])<.90);
+    assert.ok([base.left,base.right].every(p=>Math.abs(p[0])<.95 && Math.abs(p[1])<.95));
+    const target=(await send('Target.getTargets')).targetInfos.find(t=>t.title==='SysMocap 방송 출력');
+    assert.ok(target);
+    const session=(await send('Target.attachToTarget',{targetId:target.targetId,flatten:true})).sessionId;
+    const {data}=await send('Page.captureScreenshot',{format:'png'},session);
+    const capture=path.join(output,name+'-MCU.png');
+    fs.writeFileSync(capture,Buffer.from(data,'base64'));
+    // Bone positions alone can pass when hair or ears are cropped. Compare the
+    // upper scanline to its green background, inside the output window border.
+    const headroom=await ev(`(()=>{const image=require('electron').nativeImage.createFromPath(${JSON.stringify(capture)}).resize({width:320});
+        const {width,height}=image.getSize(),pixels=image.toBitmap(),y=Math.round(height*.025);
+        for(let x=Math.ceil(width*.05);x<width*.95;x++){const i=4*(y*width+x);
+            if(pixels[i+1]-Math.max(pixels[i],pixels[i+2])<60)return false;}
+        return true;})()`);
+    assert.ok(headroom,name+' head silhouette touches the top margin');
+    await ev(`(()=>{const p=document.querySelector('#broadcast-settings');for(const [k,v] of Object.entries({height:.035,fov:41})){const e=p.querySelector('[name='+k+']');e.value=v;e.dispatchEvent(new Event('input'));}})()`);
+    await sleep(200);
+    await ev(`(()=>{const w=document.querySelector('#foo').contentWindow;
+        const canvas=w.document.querySelector('#app')._vnode.component.proxy.$refs.stage.avatar.renderer.domElement;
+        canvas.dispatchEvent(new canvas.ownerDocument.defaultView.WheelEvent('wheel',{deltaY:100,cancelable:true}));})()`);
+    await sleep(250);
+    const adjusted=await local();assert.equal(adjusted.fov,41);near((await remote()).camera,adjusted.camera);
+    const settings=()=>ev("JSON.parse(localStorage.getItem('fluffo.live-controls.v1'))");
+    const saved=await settings();assert.notEqual(saved.distance,1);
+    await shot('half');assert.equal((await settings()).fov,35);
+    await shot('face');near((await local()).camera,adjusted.camera);
+    const original=await ev("sysmocapApp.selectModel");
+    await ev("document.querySelector('.primary').click()");await sleep(500);
+    await ev("sysmocapApp.selectModel=JSON.stringify(sysmocapApp.builtIn.find(m=>m.name==='Sendagaya'))");await sleep(100);
+    assert.equal((await settings()).distance,1);
+    await shot('full');
+    await ev("sysmocapApp.selectModel="+JSON.stringify(original));await sleep(150);
+    assert.equal(await ev("sysmocapApp.framing"),'face');
+    assert.equal((await settings()).distance,saved.distance);
+    await ev("document.querySelector('.primary').click()");
+    for(let i=0;i<100 && !await ev('sysmocapApp.outputOpen && sysmocapApp.facePresent');i++)await sleep(120);
+    near((await local()).camera,adjusted.camera);
+    console.log(name,'MCU, output parity, mouse zoom, per-shot, per-model and capture restart passed');
+};

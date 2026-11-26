@@ -29,7 +29,7 @@ proc.stdio[4].setEncoding('utf8').on('data',chunk=>{
  buffer+=chunk;
  for(let end;(end=buffer.indexOf('\0'))>=0;){
   const msg=JSON.parse(buffer.slice(0,end)); buffer=buffer.slice(end+1);
-  if(msg.method==='Runtime.exceptionThrown' && !globalThis.reportedError){globalThis.reportedError=true;console.log('Renderer error',msg.params.exceptionDetails.exception?.description?.slice(0,400));}
+  if(msg.method==='Runtime.exceptionThrown' && !globalThis.reportedError){globalThis.reportedError=true;const d=msg.params.exceptionDetails;console.log('Renderer error',d.exception?.description || d.exception?.value || d.text,d.url,d.lineNumber,d.columnNumber,JSON.stringify(d.stackTrace?.callFrames?.slice(0,4)?.map(f=>[f.functionName,f.lineNumber,f.columnNumber])));}
   if(msg.method==='Runtime.consoleAPICalled' && ['error','warning'].includes(msg.params.type)){const t=msg.params.args.map(a=>a.value||a.description).join(' ');if(/Fluffo|wasm|face tracking/i.test(t)) console.log(t.slice(0,1200));}
   const p=pending.get(msg.id); if(!p) continue;
   pending.delete(msg.id); if(msg.error) p.reject(new Error(msg.error.message)); else p.resolve(msg.result);
@@ -53,18 +53,52 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
  await send('Page.enable',{},sessionId);await send('Runtime.enable',{},sessionId);
 
  for(let i=0;i<60 && !(await ev('!!window.sysmocapApp'));i++) await sleep(200);
- // The renderer normally persists its settings outside Electron's user-data directory.
- await ev("require('electron-localstorage').setStoragePath("+JSON.stringify(path.join(profile,'test-settings.json'))+")");
+ assert.equal(path.resolve(await ev("require('@electron/remote').getGlobal('storagePath').jsonPath")),path.join(profile,'profile.json'),'Isolated test profile');
  const previousShirt=process.argv.includes('--shirt-before');
  const previousSleeve=process.argv.includes('--sleeve-before');
- const avatar=require('node:url').pathToFileURL(path.resolve(fixture)).href;
- const video=require('node:url').pathToFileURL(path.resolve(videoFile)).href;
+ const interfaceCheck=process.argv.includes('--rig-interface-check');
+ const avatarFile=interfaceCheck?require('./rig-interface-check.cjs').fixture(fixture,profile):fixture;
+ const avatar=require('node:url').pathToFileURL(path.resolve(avatarFile)).href;
+ const video=path.resolve(videoFile);
  const obsCheck=process.argv.includes('--obs-check');
  const obsPort=process.argv.includes('--obs-studio')?8080:18081;
  if(obsCheck)await ev(`Object.assign(window.sysmocapApp.settings.forward,{enableForwarding:true,port:'${obsPort}',supportForWebXR:true})`);
- await ev(`(()=>{let a=window.sysmocapApp;a.tab='render';a.settings.performance.useDescrertionProcess=false;a.videoSource='file';a.videoPath=[${JSON.stringify(video)}];a.selectModel=JSON.stringify({name:'Fluffo',path:${JSON.stringify(avatar)}});})()`);
+ await ev(`(()=>{let a=window.sysmocapApp;a.tab='render';a.settings.performance.useDescrertionProcess=false;a.videoSource='file';a.videoPath=[${JSON.stringify(video)}];a.selectModel=JSON.stringify({name:${JSON.stringify(option('parts-check') || option('framing-check') || (interfaceCheck?'Rig interface sample':'Fluffo'))},path:${JSON.stringify(avatar)}});})()`);
  if(obsCheck)await ev("(()=>{const a=window.sysmocapApp, model=JSON.parse(a.selectModel);model.path=require('url').fileURLToPath(model.path);model.type='vrm';a.selectModel=JSON.stringify(model)})()");
+ if(process.argv.includes('--discrete-check')){
+   await ev(`(()=>{const {BrowserView,getCurrentWindow}=require('@electron/remote');const w=getCurrentWindow();if(!w.getBrowserView()){const view=new BrowserView({webPreferences:{nodeIntegration:true,nodeIntegrationInSubFrames:true,contextIsolation:false,backgroundThrottling:false}});w.setBrowserView(view);require('@electron/remote').require('@electron/remote/main').enable(view.webContents);}sysmocapApp.settings.performance.useDescrertionProcess=true;})()`);
+ }
  await ev("document.querySelector('[onclick*=startMocap]').click()");
+ if(process.argv.includes('--discrete-check')){
+   const wait=async expression=>{for(let i=0;i<120;i++){if(await ev(expression))return;await sleep(125);}throw Error(expression+' '+JSON.stringify(await ev("(()=>{const a=sysmocapApp,v=require('@electron/remote').getCurrentWindow().getBrowserView();return {running:a.running,model:a.modelReady,input:a.inputReady,error:a.captureError,source:v.webContents.getURL()}})()")));};
+   await wait("sysmocapApp.outputOpen && sysmocapApp.facePresent");
+   const nativeView="require('@electron/remote').getCurrentWindow().getBrowserView()";
+   if(process.argv.includes('--performance-controls-check')){
+      const capture=code=>ev(nativeView+'.webContents.executeJavaScript('+JSON.stringify(code)+')');
+      await capture(`(()=>{const proto=Holistic.prototype,apply=proto.setOptions,send=proto.send;
+          window.levelProbe={level:null,completed:0};
+          proto.setOptions=function(options){levelProbe.level=options.modelComplexity;levelProbe.completed=0;return apply.call(this,options);};
+          proto.send=async function(input){await send.call(this,input);levelProbe.completed++;};})()`);
+      for(const level of ['2','0','1']){
+         await ev(`(()=>{const f=document.querySelector('#body-tracking-level');f.value='${level}';f.dispatchEvent(new Event('change'));})()`);
+         let applied=false;
+         for(let i=0;i<60 && !applied;i++){
+            await sleep(100);
+            applied=await capture('levelProbe.level==='+level+' && levelProbe.completed>=3');
+         }
+         assert.ok(applied,'Discrete inference did not resume at level '+level);
+      }
+   }
+   const checkbox="document.querySelector('.preview-switch input')";
+   await ev("if(!"+checkbox+".checked)"+checkbox+".click()");
+   await wait(nativeView+".getBounds().width>1");
+   await ev(checkbox+".click()");
+   await wait(nativeView+".getBounds().width===0");
+   await ev("document.querySelector('.primary').click()");
+   await wait(nativeView+".webContents.getURL()==='about:blank' && !sysmocapApp.outputOpen");
+   console.log('Discrete capture passed: video, tracked face, output, native preview bounds and stop');
+   return;
+ }
  let state;
  for(let i=0;i<100;i++){
    state=await ev("(()=>{const w=document.querySelector('#foo').contentWindow,v=w.document.querySelector('video'),st=w.document.querySelector('#app')?.__vue_app__?._instance?.proxy?.$refs?.stage;return {model:!!w.currentVrm,video:v?.currentTime,error:v?.error?.message,stage:!!st,src:v?.currentSrc}})()");
@@ -73,52 +107,106 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
  }
  console.log('Loaded:',state);if(process.argv.includes('--diagnose')){await sleep(2200);console.log('lookAt present:',await ev('!!document.querySelector('+JSON.stringify('#foo')+').contentWindow.currentVrm?.lookAt'));return;}
  assert.ok(state.model && state.video>0,'Could not load video and VRM');
- if(process.argv.includes('--panel-check')){
-   const panelState=()=>ev(`(()=>{const f=document.querySelector('#foo'),w=f.contentWindow,p=w.document.querySelector('#fluffo-smoothness');
-     if(!p)return null;const a=f.getBoundingClientRect(),b=p.getBoundingClientRect();
-     return {x:b.x,y:b.y,clientX:a.x+b.x+65,clientY:a.y+b.y+12,open:p.open,range:!!p.querySelector('[name=mouth]')};
-   })()`);
-   const mouse=(type,x,y)=>send('Input.dispatchMouseEvent',{type,x,y,button:'left',buttons:type==='mouseReleased'?0:1,clickCount:1},sessionId);
-   const click=async(x,y)=>{await mouse('mousePressed',x,y);await mouse('mouseReleased',x,y);};
-   const before=await panelState();
-   await click(before.clientX,before.clientY);await sleep(150);
-   const opened=await panelState();assert.ok(opened.open);
-   // Drag the collapsed title as well, to verify dragging is distinct from toggling.
-   await click(opened.clientX,opened.clientY);await sleep(100);
-   const bar=await panelState();
-   await mouse('mousePressed',bar.clientX,bar.clientY);
-   await mouse('mouseMoved',bar.clientX+110,bar.clientY-85);
-   await mouse('mouseReleased',bar.clientX+110,bar.clientY-85);await sleep(100);
-   const moved=await panelState();
-   assert.ok(!moved.open && Math.abs(moved.x-bar.x-110)<2 && Math.abs(moved.y-bar.y+85)<2,JSON.stringify({bar,moved}));
-   await click(moved.clientX,moved.clientY);await sleep(100);
-   const layer=await panelState();
-   await mouse('mousePressed',layer.clientX,layer.clientY);
-   await mouse('mouseMoved',layer.clientX+55,layer.clientY-20);
-   await mouse('mouseReleased',layer.clientX+55,layer.clientY-20);await sleep(100);
-   const placed=await panelState();
-   assert.ok(placed.open && Math.abs(placed.x-layer.x-55)<2);
-   const detach=await ev(`(()=>{const f=document.querySelector('#foo'),a=f.getBoundingClientRect(),b=f.contentDocument.querySelector('.fluffo-detach').getBoundingClientRect();return [a.x+b.x+b.width/2,a.y+b.y+b.height/2]})()`);
-   await click(...detach);
-   let floating;
-   for(let i=0;i<35&&!floating;i++){
-       const {targetInfos}=await send('Target.getTargets');floating=targetInfos.find(t=>t.type==='page' && t.title==='Fluffo 방송 설정');
-       if(!floating)await sleep(100);
+ if(process.argv.includes('--performance-controls-check') && !obsCheck){
+   await require('./performance-controls-check.cjs')({ev,sleep});
+   return;
+ }
+ if(process.argv.includes('--ear-check')){
+   for(let i=0;i<80 && !await ev('sysmocapApp.outputOpen');i++)await sleep(100);
+   await require('./ear-check.cjs')({ev,output});return;
+ }
+ if(process.argv.includes('--fur-edge-check')){
+   for(let i=0;i<80 && !await ev('sysmocapApp.outputOpen');i++)await sleep(100);
+   await require('./fur-edge-check.cjs')({ev,output});return;
+ }
+ if(process.argv.includes('--eye-fit-check')){
+   for(let i=0;i<80 && !await ev('sysmocapApp.outputOpen');i++)await sleep(100);
+   await require('./eye-fit-check.cjs')({ev,output,fixture});return;
+ }
+ if(process.argv.includes('--builtin-scene-check')){
+   for(const name of ['IceDwen','Mousey']){
+     await ev("document.querySelector('.primary').click()");
+     await sleep(600);
+     await ev(`sysmocapApp.selectModel=JSON.stringify(sysmocapApp.builtIn.find(m=>m.name===${JSON.stringify(name)}))`);
+     await sleep(100);
+     await ev("document.querySelector('.primary').click()");
+     for(let i=0;i<120 && !await ev('sysmocapApp.outputOpen && sysmocapApp.facePresent');i++)await sleep(100);
+     assert.ok(await ev("sysmocapApp.outputOpen && sysmocapApp.facePresent"),name+' did not start');
+     const joints=await ev(`(async()=>{
+       const w=document.querySelector('#foo').contentWindow;
+       const {scene}=w.document.querySelector('#app')._vnode.component.proxy.$refs.stage.avatar;
+       const {binding}=JSON.parse(sysmocapApp.selectModel);
+       const camera=await new Promise(ok=>{const old=scene.onAfterRender;scene.onAfterRender=(r,s,c)=>{scene.onAfterRender=old;ok(c);};});
+       return ['Head','LeftUpperArm','RightUpperArm'].map(key=>{
+         const mapped=binding[key] ?? (key==='Head' && binding.Neck);
+         const b=scene.getObjectByName(mapped.name);
+         return b.getWorldPosition(b.position.clone()).project(camera).toArray();
+       });
+     })()`);
+     assert.ok(joints.every(p=>p.every(v=>Math.abs(v)<1)),name+' MCU joints outside the camera '+JSON.stringify(joints));
+     await require('./scene-controls-check.cjs')({ev,sleep,send,sessionId});
+     const fields=await ev(`(()=>{const p=document.querySelector('#broadcast-settings'),shown=k=>!p.querySelector('[name="'+k+'"]').closest('label').hidden;
+       return {body:shown('body'),arm:shown('returnMs'),face:shown('blink')};})()`);
+     assert.deepEqual(fields,{body:true,arm:true,face:false});
+     console.log(name,'scene and bone-specific tracking controls passed');
    }
-   assert.ok(floating,'Detached window did not open');
-   const detachedSession=(await send('Target.attachToTarget',{targetId:floating.targetId,flatten:true})).sessionId;
-   const change=await send('Runtime.evaluate',{expression:`(()=>{const p=document.querySelector('main'),s=p.querySelector('[name=mouth]');s.value=.67;s.dispatchEvent(new Event('input'));return p.querySelectorAll('[name]').length})()`,returnByValue:true},detachedSession);
-   assert.equal(change.result.value,29);
-   await sleep(500);
-   assert.equal((await panelState()).range,false);
-   assert.equal(await ev("document.querySelector('#foo').contentDocument.querySelector('#app')._vnode.component.proxy.$refs.stage._lastData.fluffoRig.liveControls.mouth"),.67);
-   await send('Target.closeTarget',{targetId:floating.targetId});await sleep(350);
-   const back=await panelState();assert.ok(back.range && !back.open,'Closing the window did not return controls');
-   await ev("document.querySelector('#foo').contentWindow.location.reload()");
-   let reopened;
-   for(let i=0;i<65;i++){await sleep(200);reopened=await panelState();if(reopened?.range)break;}
-   assert.ok(reopened && Math.abs(reopened.x-back.x)<2 && Math.abs(reopened.y-back.y)<2,JSON.stringify({back,reopened}));
-   console.log('Passed dragging, folding, position restore and live changes from the detached window');
+   return;
+ }
+ if(process.argv.includes('--controller-check') || process.argv.includes('--panel-check')){
+   await require('./controller-check.cjs')({ev,sleep,send,sessionId,output});
+   return;
+ }
+ if(process.argv.includes('--avatar-output-check')){
+   await require('./avatar-output-check.cjs')({ev,send,sleep,output});
+   return;
+ }
+ // Renderer-oriented checks inspect the canvas after docking it in the controller.
+ for(let i=0;i<80 && !(await ev('window.sysmocapApp.outputOpen'));i++)await sleep(100);
+ if(!interfaceCheck && !process.argv.includes('--appearance-check') && !process.argv.includes('--wardrobe-check') && !process.argv.includes('--eyelid-rest-check') && !option('parts-check') && !option('framing-check') && !process.argv.includes('--scene-check') && !process.argv.includes('--tracking-check'))await ev("if(window.sysmocapApp.outputOpen)document.querySelector('#foo').contentDocument.querySelector('#avatar-output-toggle').click()");
+ if(process.argv.includes('--camera-preview-check')){
+   const read=()=>ev(`(()=>{
+     const w=document.querySelector('#foo').contentWindow,d=w.document;
+     const toggle=d.querySelector('[name=cameraPreview]'),video=d.querySelector('.input_video');
+     const stage=d.querySelector('#app')?._vnode?.component?.proxy?.$refs?.stage;
+     if(!toggle || !video || !stage?._lastData?.fluffoRig)return null;
+     return {checked:toggle.checked,video:w.getComputedStyle(video).visibility,
+       guides:w.getComputedStyle(d.querySelector('canvas.guides')).visibility,
+       avatar:w.getComputedStyle(d.querySelector('#model canvas')).visibility,
+       playing:!video.paused,frame:stage._lastData.fluffoRig.frame,face:stage._lastData.fluffoRig.faceStamp};
+   })()`);
+   const click=()=>ev("document.querySelector('#foo').contentDocument.querySelector('[name=cameraPreview]').click()");
+   const guideCalls=()=>ev(`(async()=>{
+      const w=document.querySelector('#foo').contentWindow,original=w.drawConnectors;
+      let calls=0;
+      w.drawConnectors=function(...args){calls++;return original.apply(this,args);};
+      try{await new Promise(resolve=>setTimeout(resolve,500));return calls;}
+      finally{w.drawConnectors=original;}
+   })()`);
+   async function waitForTracking(matches=()=>true){
+     let state;
+     for(let i=0;i<80;i++){state=await read();if(Number.isFinite(state?.face) && matches(state))return state;await sleep(100);}
+     throw Error('Preview state did not settle: '+JSON.stringify(state));
+   }
+   const visible=await waitForTracking();
+   assert.ok(visible.checked && visible.video==='visible' && visible.guides==='visible');
+   assert.ok(await guideCalls()>0);
+   await click();
+   const hidden=await waitForTracking(s=>!s.checked && s.video==='hidden');
+   assert.ok(!hidden.checked && hidden.video==='hidden' && hidden.guides==='hidden' && hidden.avatar==='visible');
+   await sleep(1500);
+   const tracked=await waitForTracking();
+   assert.ok(tracked.playing && tracked.frame!==hidden.frame && tracked.face!==hidden.face,'Tracking stopped with the preview hidden');
+   assert.equal(await guideCalls(),0,'Hidden input still draws tracking guides');
+   await ev("(()=>{const w=document.querySelector('#foo').contentWindow;w.document.documentElement.dataset.previewReload='pending';w.location.reload();})()");
+   for(let i=0;i<80 && await ev("document.querySelector('#foo').contentDocument?.documentElement?.dataset.previewReload==='pending'");i++)await sleep(100);
+   assert.ok(!await ev("document.querySelector('#foo').contentDocument?.documentElement?.dataset.previewReload==='pending'"),'Preview frame did not reload');
+   const restored=await waitForTracking();
+   assert.ok(!restored.checked && restored.video==='hidden' && restored.guides==='hidden');
+   await click();
+   const shown=await waitForTracking(s=>s.checked && s.video==='visible' && s.guides==='visible' && s.playing);
+   assert.ok(shown.checked && shown.video==='visible' && shown.guides==='visible' && shown.playing);
+   assert.ok(await guideCalls()>0,'Input guides did not resume');
+   console.log('Camera preview toggle, hidden face tracking and saved preference passed');
    return;
  }
  if(process.argv.includes('--live-controls')){
@@ -173,11 +261,61 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
    const positions=[];
    for(let i=0;i<40;i++){
      await sleep(250);
-     const result=await edge.send('Runtime.evaluate',{expression:"(()=>{const m=window.currentVrm;if(!m)return null;return [m.meta.name,m.expressionManager.getValue('aa'),m.humanoid.getNormalizedBoneNode('rightLowerArm').quaternion.toArray()]})()",returnByValue:true});
+     const result=await edge.send('Runtime.evaluate',{expression:"(()=>{const m=window.currentVrm;if(!m)return null;return [m.meta.name ?? m.meta.title,m.expressionManager.getValue('aa'),m.humanoid.getNormalizedBoneNode('rightLowerArm').quaternion.toArray()]})()",returnByValue:true});
      if(result.result.value)positions.push(result.result.value);
      if(positions.length>=10)break;
    }
-   if(process.argv.includes('--background-check')){
+   if(process.argv.includes('--appearance-check')){
+      assert.ok(positions.length);await require('./appearance-check.cjs')({ev,edge,output,sleep});assert.equal(edge.exceptions.size,0);return;
+   }
+   if(process.argv.includes('--performance-controls-check')){
+      assert.ok(positions.length,'Receiver did not load the avatar');
+      const receiver=expression=>edge.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true}).then(r=>r.result.value);
+      await receiver(`new Promise(ok=>{const scene=window.currentVrm.scene.parent,old=scene.onAfterRender;
+        scene.onAfterRender=(r,s,c)=>{scene.onAfterRender=old;window.readOutputFrames=()=>[r.info.render.frame,performance.now()];ok(true);};})`);
+      for(const [mode,cap] of [['30fps',30],['60fps',60],['unlimited',Infinity]]){
+         await ev(`(()=>{const field=document.querySelector('#broadcast-settings [name=outputFps]');field.value='${mode}';field.dispatchEvent(new Event('input'));})()`);
+         await sleep(500);
+         const [frames,time]=await receiver('readOutputFrames()');
+         await sleep(2500);
+         const [end,stop]=await receiver('readOutputFrames()');
+         const fps=(end-frames)*1000/(stop-time);
+         console.log('Browser output',mode,fps);
+         assert.ok(fps>5 && fps<cap+2);
+      }
+      assert.equal(edge.exceptions.size,0);return;
+   }
+   if(interfaceCheck){
+      await require('./rig-interface-check.cjs').check({ev,edge,sleep,positions});
+      assert.equal(edge.exceptions.size,0);return;
+   }
+   if(option('framing-check')){
+      assert.ok(positions.length,'Receiver did not load the avatar');
+      await require('./framing-check.cjs')({ev,edge,send,sleep,output,name:option('framing-check')});
+      assert.equal(edge.exceptions.size,0);return;
+   }
+   if(option('parts-check')){
+      assert.ok(positions.length,'Receiver did not load the avatar');
+      await require('./auto-wardrobe-check.cjs')({ev,edge,send,sessionId,output,sleep,name:option('parts-check')});
+      assert.equal(edge.exceptions.size,0);return;
+   }
+   if(process.argv.includes('--tracking-check')){
+      assert.ok(positions.length,'Receiver did not load the avatar');
+      await require('./tracking-controls-check.cjs')({ev,edge,sleep});
+      assert.equal(edge.exceptions.size,0);
+      return;
+   }
+   if(process.argv.includes('--scene-check')){
+      assert.ok(positions.length,'Receiver did not load the avatar');
+      await require('./scene-controls-check.cjs')({ev,edge,sleep,send,sessionId});
+      assert.equal(edge.exceptions.size,0,'Browser threw during rendering');
+      return;
+   }
+   if(process.argv.includes('--eyelid-rest-check')){
+      await require('./eyelid-rest-check.cjs')({ev,edge,sleep});
+   }else if(process.argv.includes('--wardrobe-check')){
+      await require('./wardrobe-check.cjs')({ev,edge,output,sleep});
+   }else if(process.argv.includes('--background-check')){
       const ui=action=>ev(`(()=>{const f=document.querySelector('#foo'),w=f.contentWindow,p=w.document.querySelector('#fluffo-smoothness');
           const mode=p.querySelector('[name=backgroundMode]'),hex=p.querySelector('[aria-label="배경 색상 HEX"]');
           const set=(input,value,event='input')=>{input.value=value;input.dispatchEvent(new w.Event(event,{bubbles:true}));};
@@ -260,8 +398,11 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
      const w=document.querySelector('#foo').contentWindow,m=w.currentVrm,scene=m.scene.parent;
      const camera=await new Promise(r=>{scene.onAfterRender=(_,__,c)=>{scene.onAfterRender=()=>{};r(c.clone())};});
      m.humanoid.resetNormalizedPose();m.update(0);m.scene.updateMatrixWorld(true);
-     const {createFluffoView}=await import(${JSON.stringify(mod)});
-     const view=createFluffoView(m,camera,{target:camera.position.clone(),update(){}});
+     const {createRigView,avatarRigProfile}=await import(${JSON.stringify(mod)});
+     const {readAvatarHeader}=await import(new URL('fluffoRigCapture.mjs',${JSON.stringify(mod)}).href);
+     const profile=avatarRigProfile(readAvatarHeader(JSON.parse(localStorage.getItem('modelInfo')).path));
+     const canvas=w.document.createElement('canvas');w.document.createElement('div').append(canvas);
+     const view=createRigView(m,camera,{target:camera.position.clone(),domElement:canvas,update(){}},profile,null);
      let now=2000;
      const upper=m.humanoid.getNormalizedBoneNode('rightUpperArm'),rest=upper.quaternion.clone();
      function tick(y,count){
@@ -437,11 +578,12 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
  }
 
  const fullHD=process.argv.includes('--1080p60');
+ const liveHD=process.argv.includes('--live-1080p');
  const baseStem=input?'fluffo-'+path.parse(input).name:process.argv.includes('--return-motion')?'fluffo-sleeve-return':process.argv.includes('--shirt-motion')?'fluffo-chest-fit':
      process.argv.includes('--hand-recovery')?'fluffo-hand-recovery':'fluffo-rig-coverage';
  const take=process.argv.find(arg=>arg.startsWith('--take='))?.slice(7);
  if(take && !/^[a-z0-9-]+$/i.test(take))throw Error('Invalid recording name');
- const stem=baseStem+(take?'-'+take:'')+(fullHD?'-1080p60':'');
+ const stem=baseStem+(take?'-'+take:'')+(fullHD?'-1080p60':liveHD?'-live1080p':'');
  const out=path.resolve(output,stem+(fullHD?'.ivf':'.webm'));
  const info=await ev(`(async()=>{
    const w=document.querySelector('#foo').contentWindow,d=w.document,v=d.querySelector('video'),canvas=d.querySelector('#model canvas'),m=w.currentVrm;
@@ -452,7 +594,7 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
    let measuring=false;
    let reviewCamera;
    scene.onBeforeRender = (renderer, sc, camera) => {
-     if(fullHD && (canvas.width!==1920 || canvas.height!==1080))renderer.setDrawingBufferSize(1920,1080,1);
+     if(${fullHD || liveHD} && (canvas.width!==1920 || canvas.height!==1080))renderer.setDrawingBufferSize(1920,1080,1);
      if(!v.paused) renders++;
      if(measuring && !v.paused && v.currentTime!==faceFrames.at(-1)?.t){
        const expr=m.expressionManager;
@@ -476,7 +618,7 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
        palms:{left:hands?.left?.palmY??null,right:hands?.right?.palmY??null}});
      return originalPush.call(this,packet);
    };
-   if(fullHD){
+   if(${fullHD || liveHD}){
      await new Promise(r=>w.requestAnimationFrame(()=>w.requestAnimationFrame(r)));
      if(canvas.width!==1920 || canvas.height!==1080)throw Error('Full HD render size was not applied');
    }
@@ -532,7 +674,7 @@ const timeout=setTimeout(()=>{console.error('Timed out');proc.kill(); process.ex
        }
      };
    }else{
-     recorder=new MediaRecorder(canvas.captureStream(30),{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:3800000});
+     recorder=new MediaRecorder(canvas.captureStream(30),{mimeType:'video/webm;codecs=vp8',videoBitsPerSecond:${liveHD?14000000:3800000}});
      done=new Promise(r=>recorder.onstop=r);
      recorder.ondataavailable=e=>{if(e.data.size)blocks.push(e.data)};
    }
